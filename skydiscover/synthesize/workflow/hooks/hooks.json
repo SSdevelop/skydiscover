@@ -11,6 +11,50 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/token_usage.py\"; [ -f \"$p\" ] && exec python3 \"$p\" --hook || exit 0",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/token_usage.py\"; [ -f \"$p\" ] && exec python3 \"$p\" --hook || exit 0",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/token_usage.py\"; [ -f \"$p\" ] && exec python3 \"$p\" --hook || exit 0",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/token_usage.py\"; [ -f \"$p\" ] && exec python3 \"$p\" --hook || exit 0",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",

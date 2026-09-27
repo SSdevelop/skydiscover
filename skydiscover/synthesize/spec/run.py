@@ -1,8 +1,9 @@
 """Check a run before the build loop starts, and save what it learned when it ends.
 
     run check  <run_dir>                          discovery produced its files? exit 0 = ready to build
-    run finish <run_dir> [domain] [--export-to <path>] [--keep-run] [--refresh-tests] [--production-ready]
-                                                  save new tests and the user's answers; publish the result
+    run finish <run_dir> [domain] [--export-to <path>] [--delete-run] [--refresh-tests] [--production-ready]
+                                                  save new tests and the user's answers; publish the result;
+                                                  snapshot the whole run into <kb>/runs/
 
 The domain names the knowledge base folder (~/.skydiscover/<domain>/); by default it is the `domain:` line
 of the run's task.md front matter.
@@ -25,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from . import archive
 from . import checkpoint as artifact_store
 from . import kept_tests
 from .decisions import kept_decisions, save
@@ -365,27 +367,35 @@ def _dir_bytes(path: Path) -> int:
 
 
 def _reclaim_transient(run: Run) -> List[str]:
-    """Delete the run's transient acquisition data now that the run is finished.
+    """Drop the bytecode caches the run wrote into its dir now that the run is finished.
 
-    The reference systems under specification/sources/ exist only for Phase 1 discovery:
-    references/ holds what the synthesis loop actually reads, and the published result never
-    contains them (see export_deliverable). Left in place they are hundreds of MB of .git history
-    per clone, accumulating across runs. Symlinks into the shared clone cache are unlinked, never
-    followed. Also drop any __pycache__ the run wrote into its dir."""
+    Nothing the run produced or read is deleted: the reference systems under
+    specification/sources/ stay where discovery put them (a clone, or a symlink into the shared
+    clone cache), and every archive snapshot records each one's url and commit."""
     lines: List[str] = []
     freed = 0
-    if run.sources.is_dir():
-        freed += _dir_bytes(run.sources)
-        shutil.rmtree(run.sources, ignore_errors=True)
     for cache in list(run.path.rglob("__pycache__")):
         if cache.is_dir() and not cache.is_symlink():
             freed += _dir_bytes(cache)
             shutil.rmtree(cache, ignore_errors=True)
     if freed:
-        lines.append(
-            f"  reclaimed: freed {freed // (1024 * 1024)} MiB (specification/sources/, __pycache__)"
-        )
+        lines.append(f"  reclaimed: freed {freed // (1024 * 1024)} MiB (__pycache__)")
     return lines
+
+
+def _token_lines(run: Run) -> List[str]:
+    """One line with the tokens the run spent, from the file hooks/token_usage.py keeps."""
+    doc = artifact_store._read_json(run.token_usage, {})
+    total = doc.get("total") if isinstance(doc, dict) else None
+    if not isinstance(total, dict) or not total.get("total_tokens"):
+        return ["  tokens: no token_usage.json in the run dir (hooks/token_usage.py records one per session)"]
+    sessions = len(doc.get("sessions") or {})
+    return [
+        f"  tokens: {total['total_tokens']:,} total over {sessions} session(s): "
+        f"{total.get('input_tokens', 0):,} input, {total.get('output_tokens', 0):,} output, "
+        f"{total.get('cache_read_input_tokens', 0):,} cache read, "
+        f"{total.get('cache_creation_input_tokens', 0):,} cache write -> {run.token_usage}"
+    ]
 
 
 def finish(
@@ -396,8 +406,8 @@ def finish(
     cleanup: bool = True,
 ) -> tuple[bool, List[str]]:
     """(ok, report lines). ok is False only if a new test could not be recorded, or no domain is
-    known. cleanup deletes the run's cloned sources and bytecode; off when the run dir is about to
-    be deleted whole."""
+    known. Either way the whole run directory is snapshotted into `<kb>/runs/` (archive.py).
+    cleanup drops the run's bytecode caches; off when the run dir is about to be deleted whole."""
     run = Run(run_dir)
     domain = domain or run.domain()
     if not domain:
@@ -422,7 +432,8 @@ def finish(
     if not suite:
         # A completed test-driven run always earns tests. Zero means test authoring never ran or the
         # tests/ dir is misplaced -- saving "nothing" and printing PASSED would hide that, so fail.
-        lines.append(f"FAILED: no tests found in {run.tests}; nothing to save.")
+        lines += archive.try_snapshot(run_dir, "finish-no-tests", domain=domain, trigger="finish")
+        lines.append(f"FAILED: no tests found in {run.tests}; no tests to save.")
         return False, lines
     for gid in recorded:
         lines.append(f"  [record] {gid}  -> {store.tests}")
@@ -451,13 +462,15 @@ def finish(
     else:
         lines.append("  decisions: no decision log in the run dir; nothing to save")
 
+    lines += _token_lines(run)
+    if cleanup:
+        lines += _reclaim_transient(run)
+    lines += archive.try_snapshot(run_dir, "finish", domain=domain, trigger="finish")
     if missing:
         lines.append("")
         lines.append("FAILED: new tests missing from the knowledge base after sync:")
         lines += [f"  - {g}" for g in missing]
         return False, lines
-    if cleanup:
-        lines += _reclaim_transient(run)
     lines.append("")
     lines.append("PASSED: tests saved; later runs can reuse them after validation.")
     return True, lines
@@ -814,6 +827,8 @@ def export_deliverable(run_dir: Path, dest: Path, *, production_ready=False) -> 
         artifact_store._replace_dir(best, out / "best")
     artifact_store.write_history(out, verdicts, _number(selected))
     best = out / "best"
+    if run.token_usage.is_file():
+        shutil.copy2(run.token_usage, out / "token_usage.json")
     return [
         f"  export: checkpoint -> {checkpoint}",
         f"  export: best -> {best}",
@@ -849,8 +864,14 @@ def main_finish(argv: Optional[List[str]] = None) -> int:
     ap.add_argument(
         "--keep-run",
         action="store_true",
-        help="keep the run's working directory after publishing; by default it is deleted, and "
-        ".skydiscover/<slug>.done records where the result went",
+        help="keep the run's working directory after publishing (the default; kept for older callers)",
+    )
+    ap.add_argument(
+        "--delete-run",
+        action="store_true",
+        help="delete the run's working directory after publishing, once a snapshot of it is safe "
+        "in <kb>/runs/; by default it is kept. Either way .skydiscover/<slug>.done records where "
+        "the result went",
     )
     ap.add_argument(
         "--production-ready",
@@ -891,9 +912,14 @@ def main_finish(argv: Optional[List[str]] = None) -> int:
             )
         except (OSError, ValueError, subprocess.SubprocessError) as e:
             print(f"run finish: --export-to failed ({e}).", file=sys.stderr)
+            # Nothing was published, but everything the run holds is still kept in <kb>/runs/.
+            lines = archive.try_snapshot(
+                run_dir, "finish-export-failed", domain=args.domain, trigger="finish", detail=str(e)
+            )
+            print("\n".join(lines + _token_lines(Run(run_dir))), file=sys.stderr)
             return 1
-    keep_run = not args.export_to or args.keep_run or Run(run_dir).is_proof_run()
-    ok, lines = finish(run_dir, args.domain, refresh_tests=args.refresh_tests, cleanup=keep_run)
+    delete = args.delete_run and not args.keep_run and not Run(run_dir).is_proof_run()
+    ok, lines = finish(run_dir, args.domain, refresh_tests=args.refresh_tests, cleanup=not delete)
     print("\n".join(lines))
     if not ok:
         print(
@@ -901,12 +927,12 @@ def main_finish(argv: Optional[List[str]] = None) -> int:
         )
         return 1
     if not args.export_to:
-        print("  run dir: kept; nothing was published (pass --export-to to publish and clean up)")
+        print("  run dir: kept; nothing was published (pass --export-to to publish)")
         return 0
-    if keep_run:
-        print(f"  run dir: kept at {run_dir} (--keep-run or proof replay files)")
+    if delete:
+        print(delete_run(run_dir, domain=args.domain))
     else:
-        print(delete_run(run_dir))
+        print(keep_run(run_dir))
     return 0
 
 
@@ -914,23 +940,54 @@ def _done_marker(run_dir: Path) -> Path:
     return run_dir.parent / f"{run_dir.name}.done"
 
 
-def delete_run(run_dir: Path) -> str:
-    """Delete a published run's working directory; leave `<slug>.done` naming the result."""
+def _publishable(run_dir: Path) -> Tuple[Optional[Path], str]:
+    """(the verified published result, "") or (None, why the run is not done)."""
     result = artifact_store.published_output(run_dir)
     if not Run(run_dir).task.is_file() or result is None:
-        return f"  run dir: kept; {run_dir} has no task.md or no published result to point at"
+        return None, f"{run_dir} has no task.md or no published result to point at"
     if not any(
         passed_final_tests(row) for row in artifact_store._read_json(result / "history.json", [])
     ):
-        return f"  run dir: kept; no checkpoint passed the final tests"
-    if result.resolve() == run_dir.resolve() or run_dir.resolve() in result.resolve().parents:
-        raise ValueError("The result is inside the run directory; it cannot be deleted safely.")
+        return None, "no checkpoint passed the final tests"
+    return result, ""
+
+
+def _write_done_marker(run_dir: Path, result: Path) -> Path:
+    """`<slug>.done` names the result; the unattended supervisor stops on it."""
     marker = _done_marker(run_dir)
     project = run_dir.resolve().parent.parent
     record = os.path.relpath(result, project) if result.is_relative_to(project) else str(result)
     marker.write_text(record + "\n", encoding="utf-8")
+    return marker
+
+
+def keep_run(run_dir: Path) -> str:
+    """Leave a published run's working directory in place and mark the run done."""
+    result, why = _publishable(run_dir)
+    if result is None:
+        return f"  run dir: kept; {why}"
+    marker = _write_done_marker(run_dir, result)
+    return f"  run dir: kept at {run_dir}; the result is at {result} (recorded in {marker})"
+
+
+def delete_run(run_dir: Path, domain: Optional[str] = None) -> str:
+    """Delete a published run's working directory once a snapshot of it is in `<kb>/runs/`; leave
+    `<slug>.done` naming the result."""
+    result, why = _publishable(run_dir)
+    if result is None:
+        return f"  run dir: kept; {why}"
+    if result.resolve() == run_dir.resolve() or run_dir.resolve() in result.resolve().parents:
+        raise ValueError("The result is inside the run directory; it cannot be deleted safely.")
+    try:
+        saved = archive.snapshot(run_dir, "before-delete", domain=domain, trigger="finish")
+    except (OSError, ValueError) as e:
+        return f"  run dir: kept; it could not be archived first ({e})"
+    marker = _write_done_marker(run_dir, result)
     shutil.rmtree(run_dir)
-    return f"  run dir: deleted {run_dir}; the result is at {result} (recorded in {marker})"
+    return (
+        f"  run dir: deleted {run_dir} (snapshot kept at {saved}); the result is at {result} "
+        f"(recorded in {marker})"
+    )
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -941,7 +998,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return main_finish(args[1:])
     usage = (
         "usage: run check <run_dir> | run finish <run_dir> [domain] [--export-to <path>] "
-        "[--keep-run] [--refresh-tests] [--production-ready]"
+        "[--delete-run] [--refresh-tests] [--production-ready]"
     )
     if args and args[0] in ("-h", "--help"):
         print(usage)

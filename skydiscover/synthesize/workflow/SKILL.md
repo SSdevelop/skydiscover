@@ -327,14 +327,14 @@ result as scoped and list its known limitations: assumptions explicit, never a f
 
 Write `<run>/report.md`: the selected properties, the exact score and baseline, the kept
 tests, the audit and review outcome, the release-claim status, and `k of N iterations` with why the
-loop ended. It is the source of your closing message (the run directory goes away next). Then publish:
+loop ended. It is the source of your closing message. Then publish:
 
 ```bash
 python3 -m skydiscover.synthesize.spec.run finish <run> --export-to .
 ```
 
 Add `--production-ready` when making that claim, so the exported copy runs the configured release checks too.
-Before deleting working files, finish checks the published copy of the result in a temporary directory and saves
+Before publishing, finish checks the published copy of the result in a temporary directory and saves
 its inputs and log under `best/.verification/`. Missing, stale, or failed checks keep the run.
 
 The run is complete only when `run finish` exits 0. It publishes `outputs/synthesize/<slug>_<timestamp>/`
@@ -342,10 +342,14 @@ The run is complete only when `run finish` exits 0. It publishes `outputs/synthe
 `references/artifacts.md`, and saves the run's tests and the user's answers into the domain's
 knowledge base as described in `references/state.md`. Nothing in the result is written by a role:
 `spec.md` and `score.json` are filled from the cards, the decision log, and the leaderboard, and
-`history.json` is one row per checkpoint with the tests it fails today. It also frees the disk the run no longer needs: the reference systems under
-`specification/sources/`, then deletes the run directory itself (`--keep-run` keeps it) and
-leaves `.skydiscover/<slug>.done` naming the result. `run finish` is the last thing that writes to
-`best/`; re-check the published artifact with `PYTHONDONTWRITEBYTECODE=1`. Shared clones are kept for other runs. A failed or unavailable final check keeps the working files.
+`history.json` is one row per checkpoint with the tests it fails today. Nothing the run produced is deleted:
+every checkpoint, every finished role and lead turn, and `run finish` snapshot the whole run directory (and the
+session transcripts) into `<kb>/runs/`, filed by iteration, the run
+directory and `specification/sources/` stay (`--delete-run` removes the run directory after its final
+snapshot), and `.skydiscover/<slug>.done` names the result. `run finish` also prints the run's token
+total from `<run>/token_usage.json`, which the token hook keeps (`references/artifacts.md`). `run finish` is
+the last thing that writes to `best/`; re-check the published artifact with `PYTHONDONTWRITEBYTECODE=1`.
+A failed or unavailable final check keeps the working files.
 Tell the user one path: the result.
 
 ## Formal-Proof-Driven Synthesis (`checked_by: proof`)
@@ -439,7 +443,9 @@ spec.checkpoint inputs <run>                 capture before measuring; store as 
 spec.checkpoint snapshot <run> [--became-best]
 spec.checkpoint stamp-audit <run> [--finding <decision-log id>]...
 spec.run check <run>
-spec.run finish <run> --export-to . [--production-ready] [--keep-run] [--refresh-tests]
+spec.run finish <run> --export-to . [--production-ready] [--delete-run] [--refresh-tests]
+spec.archive list <domain>                  every archived run and its per-iteration snapshots
+spec.archive restore <snapshot> <dest>      copy a snapshot back out as a working run directory
 ```
 
 Scripts run as files from the skill's `scripts/` directory, `<scripts>`: in a project set up by

@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +23,10 @@ from .paths import TEST_SCRIPT, Domain, Run, test_files, test_id
 
 # A header line shorter than this, or a single word, is a tag or a file name, not a property statement.
 MIN_STATEMENT_LEN = 12
+
+# Hidden, so no suite or lookup ever reads it as a test: every kept file a later sync replaced, and
+# every run body held back, under .history/<utc stamp>_<run slug>/.
+HISTORY = ".history"
 
 
 def _store(domain: str) -> Domain:
@@ -59,6 +64,18 @@ def _lock(domain: str):
             yield
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def _copy_keeping_old(src: Path, dst: Path, old: Path) -> None:
+    """Copy src over dst; when dst already holds different bytes, move them to `old` first, so a
+    later run never erases what an earlier run kept."""
+    if dst.is_file():
+        if _same_bytes(src, dst):
+            return
+        old.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(dst, old)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
 
 
 def _tokens(text: str) -> set:
@@ -199,17 +216,18 @@ def sync(run_dir: Path, domain: str, *, refresh_bodies: bool = False) -> Dict[st
     dest = _store(domain).tests
     ccs = test_files(suite)
     script = suite / TEST_SCRIPT
+    history = dest / HISTORY / f"{time.strftime('%Y%m%d_%H%M%S', time.gmtime())}_{Run(run_dir).slug}"
     if ccs and script.is_file():
         dest.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(script, dest / TEST_SCRIPT)
+        _copy_keeping_old(script, dest / TEST_SCRIPT, history / TEST_SCRIPT)
         for sub in suite.iterdir():
             if sub.is_dir() and not sub.name.startswith(".") and sub.name != "__pycache__":
-                shutil.copytree(
-                    sub,
-                    dest / sub.name,
-                    dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("__pycache__", ".*"),
-                )
+                for f in sorted(sub.rglob("*")):
+                    rel = f.relative_to(suite)
+                    if f.is_file() and not any(
+                        p.startswith(".") or p == "__pycache__" for p in rel.parts
+                    ):
+                        _copy_keeping_old(f, dest / rel, history / rel)
     # Two files with one id would lose one of them, so refuse.
     by_id: Dict[str, str] = {}
     for cc in ccs:
@@ -239,11 +257,15 @@ def sync(run_dir: Path, domain: str, *, refresh_bodies: bool = False) -> Dict[st
         if is_refresh and not same_file and not refresh_bodies:
             # The kept body is the one earlier runs validated; a changed body is not promoted on
             # the run's say-so. Re-validate it, then finish with --refresh-tests to replace it.
+            # The run's body is kept beside it, under .history/<stamp>/held/, not dropped.
+            (history / "held").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(cc, history / "held" / cc.name)
             held.append(gid)
             continue
         if not same_file:
             dest.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(cc, libfile)  # copy a new test, or deliberately replace a body
+            # copy a new test, or deliberately replace a body (the old one goes to .history/)
+            _copy_keeping_old(cc, libfile, history / cc.name)
         record(domain, row, overwrite=True)  # keep the index row in sync with the file
         (refreshed if is_refresh else recorded).append(gid)
         current[gid] = row

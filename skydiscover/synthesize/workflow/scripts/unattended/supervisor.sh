@@ -38,8 +38,8 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 say(){ echo "[$(date +%F' '%T)] $*" >> "$LOG"; }
 
 # Terminal condition. A finished run looks the same as a stuck one (no new artifacts, an idle prompt),
-# so completion is the .skydiscover/<slug>.done marker `run finish` leaves after deleting the run
-# directory. Only a marker newer than this session's start counts, so an earlier run's marker in the
+# so completion is the .skydiscover/<slug>.done marker `run finish` leaves after publishing the
+# result. Only a marker newer than this session's start counts, so an earlier run's marker in the
 # same project does not end a new one. finish also drops a stop marker so the keepalive watchdog
 # does not relaunch the supervisor.
 START="$RUNS/supervisor.$SESS.start"
@@ -54,7 +54,7 @@ finish(){   # $1 = log line. Always exit 0: a nonzero exit would make systemd Re
 
 # Generic resume/continue prompt: point the agent at its OWN on-disk state. No domain text. The last
 # sentence is what lets the supervisor ever stop; it is the only completion signal it can trust.
-CONT="Continue the in-progress skysynth run from disk. Read the newest $RUNS_REL/<slug>/ directory (its README.md, task.md, decision log, specification/, and synthesis/bench/leaderboard.json) and resume EXACTLY where it left off; do NOT restart from scratch or re-create the layout. Work in small tested steps and checkpoint progress to the decision log as you go; fix+test every real defect; prod-ready is blocked while any defect is open; honest verified numbers only. The run is complete when the report is written and \`run finish <run> --export-to .\` exits 0: it publishes the result, deletes the run directory, and leaves $RUNS_REL/<slug>.done, which is the completion signal. If no $RUNS_REL/<slug>/ exists but a $RUNS_REL/<slug>.done does, the run is finished; do nothing. Hands-off."
+CONT="Continue the in-progress skysynth run from disk. Read the newest $RUNS_REL/<slug>/ directory (its README.md, task.md, decision log, specification/, and synthesis/bench/leaderboard.json) and resume EXACTLY where it left off; do NOT restart from scratch or re-create the layout. Work in small tested steps and checkpoint progress to the decision log as you go; fix+test every real defect; prod-ready is blocked while any defect is open; honest verified numbers only. The run is complete when the report is written and \`run finish <run> --export-to .\` exits 0: it publishes the result, snapshots the run into the knowledge base, and leaves $RUNS_REL/<slug>.done, which is the completion signal. If a $RUNS_REL/<slug>.done exists, the run is finished; do nothing. Hands-off."
 
 tm(){ tmux -S "$SOCK" "$@"; }  # every tmux call on the run's socket
 

@@ -6,8 +6,8 @@ Where a run writes its state, who owns each file, and what gets published. Seque
 | Place | Path | What it is |
 |---|---|---|
 | the result | `outputs/synthesize/<slug>_<timestamp>/` | `best/` (`artifact/` the system, `tests/`, `score.json`, `spec.md`), `checkpoints/`, and `history.json`; what the user keeps |
-| the run | `.skydiscover/<slug>/` in the project | the agents' working files, grouped by phase; `run finish` deletes it after publishing |
-| the knowledge base (`<kb>`) | `~/.skydiscover/<domain>/` in the home directory; `spec.paths domain "<name>"` prints it | what earlier runs in the domain learned: tests, decisions, wiki |
+| the run | `.skydiscover/<slug>/` in the project | the agents' working files, grouped by phase; kept after publishing (`run finish --delete-run` removes it) and snapshotted whole into `<kb>/runs/` at every checkpoint |
+| the knowledge base (`<kb>`) | `~/.skydiscover/<domain>/` in the home directory; `spec.paths domain "<name>"` prints it | what earlier runs in the domain learned: tests, decisions, wiki, and `runs/`, every iteration of every run |
 
 ## The Run Directory
 
@@ -171,7 +171,7 @@ Nothing in the result is written by a role.
 |---|---|---|
 | `score.json` | `snapshot`, from the leaderboard | `score`: the candidate's declared objective, from a measurement whose inputs match the saved ones. `baselines`: one entry per baseline measured with the same task, specification, evaluator, and configuration (the measurement taken beside this candidate when there is one, else the newest; the baseline the candidate names comes first). `became_best`: whether `snapshot` ran with `--became-best`. Every other measured number stays in `bench/leaderboard.json`. |
 | `spec.md` | `spec/render.py`, from the cards and the decision log | a template, one sentence per cell: each property's question, answer, and test; the properties every run requires; the scored workload; the environment and its ceiling; the reward hacks found and the test that closes each; the checkpoint table. The decision log, the benchmark, and the profiles stay in the run directory. |
-| `.verification/` (hidden) | `snapshot`, `run finish` | what the checks ran on: checkpoint entries, input hashes, the original source, the evaluator files. `best/.verification/run/` also keeps the final task, specification, implementation, evaluator, tests, decisions, leaderboard, audit, reviews, and report; `checks.log` records the independent final check; `--keep-run` keeps the raw benchmark runs as well. |
+| `.verification/` (hidden) | `snapshot`, `run finish` | what the checks ran on: checkpoint entries, input hashes, the original source, the evaluator files. `best/.verification/run/` also keeps the final task, specification, implementation, evaluator, tests, decisions, leaderboard, audit, reviews, and report; `checks.log` records the independent final check; the raw benchmark runs stay in the run directory and in its `<kb>/runs/` snapshots. |
 | `history.json` | `run finish`, once | one row per checkpoint. From the checkpoint: `checkpoint`, `created_at`, `score`, `became_best` (the loop's call at the time), `tests` (a count; the checkpoint's `tests.json` names them, so the tests added at iteration N are the difference from N-1). From finish: `fails`, the tests the checkpoint fails against the final suite (`[]` when it passes, `null` when the tests could not run), and `published: true` on the row in `best/`. |
 | `artifact/` | `snapshot` | the candidate with the source files of `evaluator/interface/` folded in, so it compiles standalone. Lockfiles are kept; caches, clones, transcripts, and profiles are not. A symlink or a dependency outside the run must become an explicit file, and an incomplete copy is rejected. |
 
@@ -181,14 +181,41 @@ re-measured only if the final checks changed the scoring inputs. A checkpoint th
 `best/` but fails a later test is what a reward hack looks like in the history, and `fails` names
 the test that closed it (see the hacks table in `spec.md`).
 
-`run finish` also frees what the run no longer needs:
+Nothing a run produced is deleted:
 
-- `specification/sources/` is deleted, hundreds of MB of git history each, since `references/`
-  holds everything the loop read from them; shared clones under `<home>/.cache/sources/` stay
-  because another run may use them.
-- the run directory is deleted (`--keep-run` keeps it) and `.skydiscover/<slug>.done` records
-  where the result went; while the run is alive, `<run>/.output` holds the same path.
+- the whole run directory is snapshotted into `<kb>/runs/<slug>_<timestamp>/snapshots/`
+  (`spec/archive.py`) at every checkpoint, whenever a role finishes, whenever a lead turn ends,
+  before a compaction, when a session ends, and at `run finish` (whether or not the export
+  passed). Each snapshot is named for its iteration and what just happened
+  (`0007_iter-03_after-coding-agent`, `0008_iter-03_checkpoint_3`), so an attempt that failed its
+  tests and was never scored is kept too. Iteration K is the work that ends in checkpoint_K;
+  iteration 0 is the specification. An unchanged run adds no snapshot; unchanged files are hard
+  links to the previous snapshot; clones are recorded as url and commit.
+- the Claude Code transcripts of every session that worked on the run (lead, subagents, persisted
+  tool results) are mirrored into `<kb>/runs/<...>/transcripts/<session>/`, so they outlive Claude
+  Code's own transcript cleanup; each snapshot's manifest records how far each transcript had
+  grown, which ties a snapshot to the conversation behind it.
+- `<kb>/runs/<...>/index.json` and `iterations.md` hold the per-iteration table: its snapshots,
+  its checkpoint and score, and the tokens it spent, in total and by role.
+  `spec.archive list <domain>` prints it; `spec.archive restore <snapshot> <dest>` copies a
+  snapshot back out as a working run directory.
+- `specification/sources/` stays; shared clones under `<home>/.cache/sources/` stay too.
+- the run directory stays (`--delete-run` removes it, only after its final snapshot is safe) and
+  `.skydiscover/<slug>.done` records where the result went; while the run is alive,
+  `<run>/.output` holds the same path and `<run>/.archive` names its snapshots.
+- `token_usage.json` (see below) is copied beside `history.json` in the published result.
 - a failed or unavailable final check blocks publication and keeps the working files, and a
   proof-driven run always keeps them for proof replay.
 
-After a run, the disk holds the result and the knowledge base.
+### Token usage
+
+`hooks/token_usage.py` runs when a turn, a subagent, or a session ends and before a compaction
+(Claude Code), detached so it never slows the agent. It recounts the session's transcript and its
+subagents' transcripts, each message once, and rewrites `<run>/token_usage.json`: the run's total
+(input, output, cache read, cache write, and their sum) per session, per role, per model, and per
+iteration with the roles inside each (a message is filed by its timestamp: after checkpoint_(K-1),
+up to checkpoint_K). Each firing appends the event, the role that finished, the iteration, and the
+running totals to `<run>/token_usage.log.jsonl`, then takes the snapshot above. Errors go to
+`<run>/hook_errors.log`. `run finish` prints the total. The snapshots need the skydiscover package
+importable by `python3` (`pip install -e <checkout>`); without it tokens are still recorded. To rebuild the token usage file of an earlier
+run from its transcripts: `python3 <hooks>/token_usage.py <run>`.

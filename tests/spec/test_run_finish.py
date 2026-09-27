@@ -135,10 +135,10 @@ def test_finish_saves_a_real_suite(tmp_path, lib):
     assert len(kept_tests.tests_for("example domain")) == 1
 
 
-def test_finish_reclaims_transient_sources_and_pycache(tmp_path, lib):
-    # A finished run's reference systems (specification/sources/) and stray __pycache__ are
-    # transient weight: references/ holds what the synthesis loop reads and the result never
-    # contains sources/. finish prunes them; references/ and tests/ survive; finish still passes.
+def test_finish_keeps_sources_and_drops_only_pycache(tmp_path, lib):
+    # finish deletes nothing the run produced or read: the reference systems under
+    # specification/sources/ stay (clone or symlink), and so do references/ and tests/. Only stray
+    # __pycache__ goes. The whole run is snapshotted into <kb>/runs/, clones as url + commit.
     run = _run_with_tests(tmp_path)
     (run.tests / "check_lru.py").write_text(
         "# Exact LRU eviction is preserved.\n", encoding="utf-8"
@@ -159,13 +159,20 @@ def test_finish_reclaims_transient_sources_and_pycache(tmp_path, lib):
     ok, lines = spec_run.finish(run.path, "python-lru")
 
     assert ok, lines
-    assert not run.sources.exists()  # cloned reference systems reclaimed
+    assert (repo_git / "pack").exists()  # the cloned reference system is kept
+    assert (run.sources / "guava").is_symlink()  # and so is the link into the shared cache
     assert (cache_clone / "kept.java").exists()  # the shared cache behind the symlink is untouched
     assert not (run.impl / "__pycache__").exists()  # stray bytecode reclaimed
     assert (run.references / "caffeine" / "spec.json").exists()  # what the loop reads survives
     assert (run.tests / "check_lru.py").exists()  # tests survive
     assert any("reclaimed" in ln for ln in lines)
-    # idempotent: a second finish with sources/ already gone still passes
+    (snap,) = Domain("python-lru").runs.glob("*/snapshots/*_finish")
+    manifest = json.loads((snap / "manifest.json").read_text())
+    assert [c["path"] for c in manifest["clones"]] == ["specification/sources/caffeine"]
+    assert not (snap / "specification/sources/caffeine").exists()  # recorded, not copied
+    assert (snap / "specification/sources/guava").is_symlink()
+    assert (snap / "synthesis/tests/check_lru.py").is_file()
+    # idempotent: a second finish still passes
     ok2, _ = spec_run.finish(run.path, "python-lru")
     assert ok2
 

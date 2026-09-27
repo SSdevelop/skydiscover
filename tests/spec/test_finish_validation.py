@@ -99,7 +99,10 @@ def test_published_workload_uses_measured_configuration(run, tmp_path, config):
     assert "| Threads | 64 |" not in page
     assert ("| Threads | 1 |" in page) == bool(config)
     assert Domain("integer-provider").tests_index.exists()
-    assert not run.path.exists()
+    assert run.path.exists(), "the run directory is kept"
+    assert (run.path.parent / f"{run.path.name}.done").is_file()
+    snaps = list(Domain("integer-provider").runs.glob("*/snapshots/*_finish"))
+    assert snaps and (snaps[0] / "task.md").is_file(), "finish snapshots the whole run"
     assert delivery._done_marker(run.path).is_file()
 
 

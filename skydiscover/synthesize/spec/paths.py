@@ -236,6 +236,16 @@ class Run:
         """Where checkpoint.py published this run; written once so `run finish` is idempotent."""
         return self.path / ".output"
 
+    @property
+    def archive_pointer(self) -> Path:
+        """Where archive.py keeps this run's snapshots in the knowledge base; written once."""
+        return self.path / ".archive"
+
+    @property
+    def token_usage(self) -> Path:
+        """The tokens every session and role of this run spent, kept by hooks/token_usage.py."""
+        return self.path / "token_usage.json"
+
     def domain(self) -> Optional[str]:
         """The knowledge base folder this run reads and feeds: the `domain:` line of task.md's front matter,
         slugged. None when the task carries none."""
@@ -503,8 +513,9 @@ These are the working files of the run `{slug}`. The agents read and write here 
     {outputs_dir}/{slug}_<timestamp>/checkpoints/  one scored candidate per iteration: artifact/, score.json, tests.json
     {outputs_dir}/{slug}_<timestamp>/history.json  written at finish: one row per checkpoint, with the tests it fails today
 
-Start with `best/spec.md`. `run finish` deletes this directory once the result is published
-(`--keep-run` keeps it). Until then it holds everything needed to continue: open your coding agent
+Start with `best/spec.md`. This directory stays after the result is published (`run finish
+--delete-run` removes it), and every checkpoint snapshots it whole into the domain's knowledge base
+(`<kb>/runs/`); `token_usage.json` holds the tokens spent. It holds everything needed to continue: open your coding agent
 in the project and ask it to continue the skysynth run `{slug}` from `{runs_dir}/{slug}/`.
 
 ## Map
@@ -543,6 +554,7 @@ class Domain:
     ~/.skydiscover/<domain>/
     ├── tests/           kept tests from finished runs, with index.json
     ├── decisions.json   the user's answers and confirmed reward hacks, saved at run finish
+    ├── runs/            every run in the domain, snapshotted whole at each checkpoint (archive.py)
     └── wiki/            optional pages kb-builder writes: sources, properties, hacks, designs
     """
 
@@ -569,6 +581,11 @@ class Domain:
     @property
     def wiki(self) -> Path:
         return self.path / "wiki"
+
+    @property
+    def runs(self) -> Path:
+        """One folder per run, each holding a snapshot of the whole run directory per iteration."""
+        return self.path / "runs"
 
 
 # Folders under home that are not a domain (dot-folders are never one either).

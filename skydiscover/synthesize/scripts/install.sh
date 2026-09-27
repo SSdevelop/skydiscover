@@ -82,9 +82,9 @@ prune_broken() {
 # Claude Code: merge the hook and env config into .claude/settings.local.json without touching
 # anything else in it. Backs the file up once and writes atomically.
 write_claude_settings() {
-python3 - "$1" "$2" "$3" "$4" <<'PY'
+python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
 import json, os, shutil, sys, uuid
-path, hook, guard, edit_guard = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+path, hook, guard, edit_guard, tokens = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 try:
     with open(path, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -138,6 +138,20 @@ if not efound:
             "hooks": [{"type": "command", "command": edit_guard, "timeout": GUARD_TIMEOUT}],
         }
     )
+# The token usage file: recount the session's tokens into <run>/token_usage.json whenever a turn, a
+# subagent, or a session ends, and before a compaction.
+for event in ("Stop", "SubagentStop", "PreCompact", "SessionEnd"):
+    entries = cfg["hooks"].setdefault(event, [])
+    tfound = False
+    for e in entries:
+        for h in (e.get("hooks", []) if isinstance(e, dict) else []):
+            if isinstance(h, dict) and "token_usage.py" in str(h.get("command", "")):
+                tfound = True
+                if h.get("command") != tokens:
+                    h["command"] = tokens
+                h.setdefault("timeout", GUARD_TIMEOUT)
+    if not tfound:
+        entries.append({"hooks": [{"type": "command", "command": tokens, "timeout": GUARD_TIMEOUT}]})
 if json.dumps(cfg, sort_keys=True) != before:
     bak = f"{path}.bak.{os.getpid()}"
     if os.path.exists(path) and not os.path.exists(bak):
@@ -220,16 +234,18 @@ install_claude() {
     hook_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/delivery_check.sh"; [ -f "$p" ] || p="'"$hooks"'/delivery_check.sh"; exec bash "$p"'
     guard_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/clone_reuse_guard.py"; [ -f "$p" ] || p="'"$hooks"'/clone_reuse_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
     edit_guard_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/framework_edit_guard.py"; [ -f "$p" ] || p="'"$hooks"'/framework_edit_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
+    token_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/token_usage.py"; [ -f "$p" ] || p="'"$hooks"'/token_usage.py"; [ -f "$p" ] && exec python3 "$p" --hook || exit 0'
   else
     # Absolute paths, guarded the same way: a checkout that moved must not turn every Bash call
     # into a blocked PreToolUse (exit 2) or every task completion into a failed hook.
     hook_cmd='p="'"$hooks"'/delivery_check.sh"; [ -f "$p" ] && exec bash "$p"; echo "delivery check: $p is missing (was the skydiscover checkout moved?); re-run skydiscover init" >&2; exit 0'
     guard_cmd='p="'"$hooks"'/clone_reuse_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
     edit_guard_cmd='p="'"$hooks"'/framework_edit_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
+    token_cmd='p="'"$hooks"'/token_usage.py"; [ -f "$p" ] && exec python3 "$p" --hook || exit 0'
   fi
   settings="$target/.claude/settings.local.json"
-  if write_claude_settings "$settings" "$hook_cmd" "$guard_cmd" "$edit_guard_cmd"; then
-    echo "Configured $settings (the hook that runs the tests before anything is delivered, plus the PreToolUse guards); restart Claude Code to load it."
+  if write_claude_settings "$settings" "$hook_cmd" "$guard_cmd" "$edit_guard_cmd" "$token_cmd"; then
+    echo "Configured $settings (the hook that runs the tests before anything is delivered, the PreToolUse guards, and the token usage file); restart Claude Code to load it."
     echo "Optional: set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in that file's env to run the roles as an agent team."
   else
     echo "Could not write $settings. Add manually a TaskCompleted hook running:  $hook_cmd"

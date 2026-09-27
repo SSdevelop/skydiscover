@@ -168,7 +168,7 @@ by a file the run already has:
   digests of the implementation and current inputs being delivered.
 
 `run finish --export-to . [--production-ready]` also runs the suite against a temporary copy of the
-actual result before deleting working files. Saved inputs and logs
+actual result before publishing it. Saved inputs and logs
 live in `best/.verification/`; these checks use the installed framework and host toolchains, not an
 OS sandbox or a self-contained runtime. Inspect property coverage and external dependencies yourself.
 

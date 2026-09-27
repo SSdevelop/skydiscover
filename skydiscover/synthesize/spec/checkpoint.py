@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from .archive import try_snapshot
 from .paths import Run, outputs, project_of, test_files
 from .render import render_spec
 
@@ -750,6 +751,18 @@ def snapshot_run(
     )
     if became_best:
         publish_best(output_dir, checkpoint, run_dir)
+    # One iteration, one snapshot of the whole run in the knowledge base: the plan, decision log,
+    # logs, and token usage file as they stood, which the next iteration overwrites. Stderr, so the
+    # checkpoint path stays the only thing on stdout.
+    detail = f"{checkpoint.name} {json.dumps(score.get('score'))}"
+    lines = try_snapshot(
+        run_dir,
+        checkpoint.name,
+        iteration=int(checkpoint.name.removeprefix("checkpoint_")),  # iteration K ends in checkpoint_K
+        trigger="checkpoint",
+        detail=detail + (" (became best)" if became_best else ""),
+    )
+    print("\n".join(line.strip() for line in lines), file=sys.stderr)
     return output_dir, checkpoint
 
 

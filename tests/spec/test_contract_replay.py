@@ -500,7 +500,10 @@ def test_run_finish_publishes_and_feeds_the_knowledge_base(lead, S):
     assert any(
         f["answered_by"] == "human" for f in _jread(domain / "decisions.json")
     ), "state.md: the user's answers are carried into the knowledge base"
-    assert not run.exists(), "SKILL Phase 3: run finish deletes the run directory"
+    assert run.exists(), "SKILL Phase 3: run finish keeps the run directory"
+    assert list(
+        (domain / "runs").glob("*/snapshots/*/decision_log.json")
+    ), "state.md: every iteration of the run is kept in <kb>/runs/"
     marker = run.parent / f"{run.name}.done"
     assert (lead.work / marker.read_text().strip()) == S["pub"], "the .done marker names the result"
     assert all(

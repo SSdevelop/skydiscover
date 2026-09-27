@@ -77,6 +77,8 @@ spells it, so two runs on "KV Store" and "kv-store" share a folder.
 |---|---|---|
 | `<domain>/tests/` | kept tests from finished runs, the last run's `test.sh`, and `index.json` (property id, keywords) | `run finish`, automatically |
 | `<domain>/decisions.json` | every answer the user gave and every confirmed reward hack, saved from decision logs | `run finish`, automatically |
+| `<domain>/runs/` | every run in the domain: a snapshot of the whole run directory per checkpoint, per finished role, per turn, and at finish; the session transcripts; `index.json` and `iterations.md` with each iteration's checkpoint, score, and tokens by role | `spec.checkpoint snapshot`, `hooks/token_usage.py`, and `run finish`, automatically |
+| `<domain>/tests/.history/` | every kept test body or `test.sh` a later run replaced, and every run body held back | `run finish`, automatically |
 | `<domain>/wiki/` | wiki pages: reference systems pinned to a commit, properties, benchmarks, profiling, tests, known hacks, designs | `kb-builder`, on a Standard or Thorough budget |
 | `shared/wiki/` | pages that hold for every domain | `kb-builder` |
 | `.cache/sources/` | cloned reference systems shared across runs; finishing one run keeps them | spec-builder (discovery) |
@@ -93,5 +95,5 @@ reward hacks. Roles read pages with `kbtool.py find <words> [--kind] [--tag]` an
 <id> --follow-sources`, described in `workflow/scripts/kb/README.md`.
 
 The knowledge base speeds a run up but is never a substitute for discovery and never required; a
-thin or missing folder means fresh discovery. Run-local evidence stays in the run directory until
-`run finish` deletes it, and what the user keeps is the result under `outputs/`.
+thin or missing folder means fresh discovery. Run-local evidence stays in the run directory, and
+every iteration of it stays in `<domain>/runs/`; what the user ships is the result under `outputs/`.

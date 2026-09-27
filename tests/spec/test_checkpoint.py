@@ -341,7 +341,7 @@ def test_postflight_export_uses_minimal_layout_and_is_idempotent(tmp_path):
     shutil.rmtree(moved)
 
 
-def test_run_finish_deletes_the_run_dir_and_leaves_a_done_marker(tmp_path, capsys):
+def test_run_finish_delete_run_archives_then_deletes_and_leaves_a_done_marker(tmp_path, capsys):
     run = _write_run(tmp_path, runnable=True)
     run.task.write_text("---\ndomain: kv\n---\n# store\n", encoding="utf-8")
     home = tmp_path / "home"
@@ -349,15 +349,18 @@ def test_run_finish_deletes_the_run_dir_and_leaves_a_done_marker(tmp_path, capsy
     _record_measurement(run.path)
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("SKYDISCOVER_HOME", str(home))
-        assert spec_run.main_finish([str(run.path), "kv", "--export-to", str(tmp_path)]) == 0
+        args = [str(run.path), "kv", "--export-to", str(tmp_path), "--delete-run"]
+        assert spec_run.main_finish(args) == 0
         out = capsys.readouterr().out
         assert not run.path.exists()
+        snaps = sorted((home / "kv" / "runs").glob("*/snapshots/*"))
+        assert snaps and (snaps[-1] / "task.md").is_file(), "deleted only after a snapshot"
         marker = run.path.parent / "kv-store.done"
         result = tmp_path / marker.read_text().strip()
         assert (result / "best" / "spec.md").is_file() and (result / "history.json").is_file()
         assert "run dir: deleted" in out
         # finishing again is a no-op that points at the result
-        assert spec_run.main_finish([str(run.path), "kv", "--export-to", str(tmp_path)]) == 0
+        assert spec_run.main_finish(args) == 0
         assert str(result) in capsys.readouterr().out
 
 
@@ -370,9 +373,11 @@ def test_run_finish_keep_run_and_no_export_leave_the_run_dir(tmp_path, capsys):
         assert spec_run.main_finish([str(run.path), "kv"]) == 0
         assert run.path.is_dir() and "nothing was published" in capsys.readouterr().out
         _record_measurement(run.path)
-        args = [str(run.path), "kv", "--export-to", str(tmp_path), "--keep-run"]
-        assert spec_run.main_finish(args) == 0
-        assert run.path.is_dir() and "--keep-run" in capsys.readouterr().out
+        for extra in (["--keep-run"], []):  # keeping is the default; --keep-run still accepted
+            args = [str(run.path), "kv", "--export-to", str(tmp_path), *extra]
+            assert spec_run.main_finish(args) == 0
+            assert run.path.is_dir() and "run dir: kept at" in capsys.readouterr().out
+            assert (run.path.parent / "kv-store.done").is_file()
 
 
 def test_postflight_preserves_an_earlier_best_checkpoint(tmp_path):
