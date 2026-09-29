@@ -7,7 +7,7 @@ Where a run writes its state, who owns each file, and what gets published. Seque
 |---|---|---|
 | the result | `outputs/synthesize/<slug>_<timestamp>/` | `best/` (`artifact/` the system, `tests/`, `score.json`, `spec.md`), `checkpoints/`, and `history.json`; what the user keeps |
 | the run | `.skydiscover/<slug>/` in the project | the agents' working files, grouped by phase; kept after publishing (`run finish --delete-run` removes it) and snapshotted whole into `<kb>/runs/` at every checkpoint |
-| the knowledge base (`<kb>`) | `~/.skydiscover/<domain>/` in the home directory; `spec.paths domain "<name>"` prints it | what earlier runs in the domain learned: tests, decisions, wiki, and `runs/`, every iteration of every run |
+| the knowledge base (`<kb>`) | `.skydiscover/kb/<domain>/` in the project; `spec.paths domain "<name>"` prints it | what every run in the project learned: tests, decisions, wiki, `runs/` (every iteration of every run), and `versions/` (the knowledge base as each run left it, one version per run) |
 
 ## The Run Directory
 
@@ -42,7 +42,7 @@ The front matter of `task.md` carries two keys the helpers read:
 
 ```yaml
 ---
-domain: job scheduler     # the knowledge base folder this run reads and feeds: ~/.skydiscover/job-scheduler/
+domain: job scheduler     # the knowledge base folder this run reads and feeds: .skydiscover/kb/job-scheduler/
 checked_by: proof         # only for a formal-proof-driven run; omit for the test-driven path
 ---
 ```
@@ -121,12 +121,12 @@ Time budgets (`SKYDISCOVER_TEST_MAX_SECS`, `SKYDISCOVER_SLOW_SECS`) are document
 ## Knowledge Base
 
 `run finish` saves what outlives the run into the domain's knowledge base, `<kb>`: by default
-`~/.skydiscover/<domain>/` (`SKYDISCOVER_HOME` or `config.toml` moves the root), the folder named
+`.skydiscover/kb/<domain>/` (`SKYDISCOVER_HOME` or `config.toml` moves the root), the folder named
 by the task's `domain:`. The same spelling rule (`spec.paths domain <text>`) is used
 everywhere, so runs in one domain find each other.
 
 ```text
-<home>/                             ~/.skydiscover by default
+<home>/                             <project>/.skydiscover/kb by default
 ├── <domain>/                       <kb>
 │   ├── tests/                      kept tests from finished runs, with index.json, the latest test.sh, and helper subdirectories
 │   ├── decisions.json              the user's answers and confirmed reward hacks, saved from decision logs

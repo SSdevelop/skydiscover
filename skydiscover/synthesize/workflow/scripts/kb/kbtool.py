@@ -19,7 +19,7 @@ Keep it honest:
                                   which hack is caught, which source is cited)
 
 All take --root <folder>; the default is the knowledge base root spec/paths.py resolves
-(~/.skydiscover unless config.toml or $SKYDISCOVER_HOME moves it).
+(<project>/.skydiscover/kb unless config.toml or $SKYDISCOVER_HOME moves it).
 """
 
 import argparse
@@ -35,7 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def default_root():
-    """The knowledge base root spec/paths.py resolves (config, $SKYDISCOVER_HOME, ~/.skydiscover)."""
+    """The knowledge base root spec/paths.py resolves ($SKYDISCOVER_HOME, config, <project>/.skydiscover/kb)."""
     sys.path.insert(0, str(Path(HERE).resolve().parents[2]))  # a source checkout's spec/
     try:
         from spec.paths import home  # noqa: WPS433
@@ -43,7 +43,17 @@ def default_root():
         try:
             from skydiscover.synthesize.spec.paths import home  # noqa: WPS433
         except ModuleNotFoundError:
-            return os.path.expanduser(os.environ.get("SKYDISCOVER_HOME") or "~/.skydiscover")
+            env = os.environ.get("SKYDISCOVER_HOME")
+            if env:
+                return os.path.expanduser(env)
+            # spec.paths.home()'s default without the package: <project>/.skydiscover/kb
+            here, user_home = Path.cwd().resolve(), Path.home().resolve()
+            for d in (here, *here.parents):
+                if d == user_home:
+                    break
+                if (d / ".skydiscover").is_dir():
+                    return str(d / ".skydiscover" / "kb")
+            return str(here / ".skydiscover" / "kb")
     return str(home())
 
 

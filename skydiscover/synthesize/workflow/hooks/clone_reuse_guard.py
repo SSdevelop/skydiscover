@@ -37,7 +37,17 @@ def kb_root() -> Path:
         return home()
     except Exception:
         env = os.environ.get("SKYDISCOVER_HOME")
-        return Path(env).expanduser() if env else Path.home() / ".skydiscover"
+        if env:
+            return Path(env).expanduser()
+        # spec.paths.home()'s default, without the package: <project>/.skydiscover/kb, the project
+        # being the nearest directory above the cwd (never the home directory) holding .skydiscover/
+        here, user_home = Path.cwd().resolve(), Path.home().resolve()
+        for d in (here, *here.parents):
+            if d == user_home:
+                break
+            if (d / ".skydiscover").is_dir():
+                return d / ".skydiscover" / "kb"
+        return here / ".skydiscover" / "kb"
 
 
 def wiki_page(root: Path, pattern: str) -> list:

@@ -85,7 +85,7 @@ these words and no synonyms.
 | **Environment card** | `cards/environment.json`: the resource that bounds the score, its measured limit here, and the ceiling that implies. Written by the spec-builder when the benchmark scores a rate, a latency, or a cost. |
 | **Reward hack** | a change that improves the score while violating what the specification meant. The Auditor finds them and turns each into a test. |
 | **Domain** | the kind of system being built (`kv store`, `cache`, `compiler`), named in `task.md`'s front matter. |
-| **Knowledge base** | `<kb>` in the briefs: `~/.skydiscover/<domain>/` by default (`spec.paths domain "<name>"` prints it; `<home>` is its parent), what earlier runs in the domain learned: kept **tests**, the user's answers and confirmed reward hacks (**decisions**), and an optional **wiki** (reference systems pinned to a commit, properties, known reward hacks). |
+| **Knowledge base** | `<kb>` in the briefs: `.skydiscover/kb/<domain>/` by default (`spec.paths domain "<name>"` prints it; `<home>` is its parent), what earlier runs in the domain learned: kept **tests**, the user's answers and confirmed reward hacks (**decisions**), and an optional **wiki** (reference systems pinned to a commit, properties, known reward hacks). |
 | **Run directory** | `.skydiscover/<slug>/`, the agents' working files: `task.md`, `decision_log.json`, `report.md`, and one folder per phase (`specification/`, `synthesis/`, `review/`). Layout: `references/artifacts.md`. |
 | **Decision log** | `<run>/decision_log.json`: every question, its answer, every finding, and who decided each. |
 | **Iteration** | one coding-agent change, one scored evaluation, one checkpoint. |

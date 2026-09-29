@@ -1,4 +1,4 @@
-"""The tests a domain's knowledge base keeps across runs: ~/.skydiscover/<domain>/tests/.
+"""The tests a domain's knowledge base keeps across runs: .skydiscover/kb/<domain>/tests/.
 
 lookup suggests tests to validate (exact id = candidate, keyword = related); sync copies a
 finished run's suite in, test.sh included; record adds one entry. The index (tests/index.json) is
@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .paths import TEST_SCRIPT, Domain, Run, test_files, test_id
+from .paths import TEST_SCRIPT, Domain, Run, near_run, test_files, test_id
 
 # A header line shorter than this, or a single word, is a tag or a file name, not a property statement.
 MIN_STATEMENT_LEN = 12
@@ -204,6 +204,7 @@ def _property_from_header(cc: Path) -> str:
     return ""
 
 
+@near_run
 def sync(run_dir: Path, domain: str, *, refresh_bodies: bool = False) -> Dict[str, Any]:
     """Copy every test in the run's suite, its test.sh, and its helper subdirectories into the
     domain's tests/ and record each test, deduped by id. An unchanged test is skipped. A test whose
@@ -281,7 +282,7 @@ def sync(run_dir: Path, domain: str, *, refresh_bodies: bool = False) -> Dict[st
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python3 -m skydiscover.synthesize.spec.kept_tests",
-        description="The tests a domain has kept from earlier runs (~/.skydiscover/<domain>/tests/). "
+        description="The tests a domain has kept from earlier runs (.skydiscover/kb/<domain>/tests/). "
         "`run finish` adds to it; the evaluator looks it up before writing a test.",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)

@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .paths import Domain, Run, files_under
+from .paths import Domain, Run, files_under, near_run
 
 MANIFEST = "manifest.json"
 _SKIP_DIRS = {"__pycache__", ".pytest_cache"}
@@ -170,6 +170,7 @@ def current_iteration(run_dir: Path) -> int:
 # ------------------------------------------------------------------------------------ the archive
 
 
+@near_run
 def archive_for(run_dir: Path, domain: Optional[str] = None) -> Path:
     """This run's folder under `<kb>/runs/`, created on first use and remembered in `<run>/.archive`
     so every later snapshot, from any process, lands beside the first."""
@@ -210,10 +211,15 @@ def _label(text: str) -> str:
 
 
 def _copy_tree(
-    src: Path, dst: Path, previous: Optional[Path], before: Dict[str, Dict[str, Any]]
+    src: Path,
+    dst: Path,
+    previous: Optional[Path],
+    before: Dict[str, Dict[str, Any]],
+    skip_top: Tuple[str, ...] = (),
 ) -> Dict[str, Any]:
     """Copy src into dst, hard-linking each file whose bytes match the previous snapshot's. A file
-    whose size and mtime match the previous manifest is not re-hashed."""
+    whose size and mtime match the previous manifest is not re-hashed. `skip_top` names entries
+    directly under src that are left out."""
     files: Dict[str, Dict[str, Any]] = {}
     links: Dict[str, str] = {}
     clones: List[Dict[str, Any]] = []
@@ -221,6 +227,9 @@ def _copy_tree(
     for here, dirs, names in os.walk(src, followlinks=False):
         base = Path(here)
         rel_dir = base.relative_to(src)
+        if rel_dir == Path(".") and skip_top:
+            dirs[:] = [d for d in dirs if d not in skip_top]
+            names = [n for n in names if n not in skip_top]
         (dst / rel_dir).mkdir(parents=True, exist_ok=True)
         keep = []
         for d in sorted(dirs):
@@ -393,6 +402,7 @@ def _refresh_index(run: Run, archive: Path, domain: Optional[str], row: Optional
     (archive / "iterations.md").write_text(_iterations_md(index), encoding="utf-8")
 
 
+@near_run
 def snapshot(
     run_dir: Path,
     label: str = "snapshot",
@@ -440,6 +450,7 @@ def snapshot(
             if unchanged:
                 shutil.rmtree(staging)
                 _refresh_index(run, archive, domain, None)
+                refresh_kb_version(run.path, domain)
                 return previous
             manifest = {
                 "label": label,
@@ -478,7 +489,94 @@ def snapshot(
                 "total_tokens": total.get("total_tokens") if isinstance(total, dict) else None,
             },
         )
-        return root / name
+    refresh_kb_version(run.path, domain)
+    return root / name
+
+
+# ------------------------------------------------------------------------------------ versions
+
+
+# What a version of the knowledge base holds: everything in the domain's folder except the runs'
+# own archives and the other versions.
+_NOT_IN_VERSION = ("runs", "versions")
+
+
+@near_run
+def refresh_kb_version(run_dir: Path, domain: Optional[str] = None) -> Optional[Path]:
+    """Write `<kb>/<domain>/versions/<this run's archive name>/`: the domain's knowledge base
+    (tests/, decisions.json, wiki/, ...) as it stands now, i.e. as this run found it at its first
+    snapshot and as it leaves it at `run finish`. One version per run, so a run today and a run
+    tomorrow leave two; a run only ever rewrites its own. Unchanged files are hard links to the
+    version's previous state; an unchanged knowledge base rewrites nothing."""
+    run = Run(run_dir)
+    slug = domain or run.domain()
+    if not slug:
+        return None
+    store = Domain(slug)
+    archive = archive_for(run.path, domain)
+    root = store.versions
+    root.mkdir(parents=True, exist_ok=True)
+    dest = root / archive.name
+    with _lock(root):
+        manifest = _read_json(dest / MANIFEST, {}) if dest.is_dir() else {}
+        before = manifest.get("files") or {}
+        staging = root / f".{archive.name}.tmp.{os.getpid()}"
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            staging.mkdir()
+            if store.path.is_dir():
+                copied = _copy_tree(
+                    store.path, staging, dest if dest.is_dir() else None, before, _NOT_IN_VERSION
+                )
+            else:
+                copied = {"files": {}, "links": {}, "clones": [], "new_bytes": 0}
+            if dest.is_dir() and {k: v["sha256"] for k, v in copied["files"].items()} == {
+                k: v.get("sha256") for k, v in before.items()
+            }:
+                shutil.rmtree(staging)
+                return dest
+            now = _utc_now()
+            _write_json(
+                staging / MANIFEST,
+                {
+                    "run": run.slug,
+                    "run_archive": str(archive),
+                    "created_at": manifest.get("created_at") or now,
+                    "updated_at": now,
+                    "files": copied["files"],
+                },
+            )
+            old = root / f".{archive.name}.old.{os.getpid()}"
+            if dest.exists():
+                os.replace(dest, old)
+            os.replace(staging, dest)
+            shutil.rmtree(old, ignore_errors=True)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        index = _read_json(root / "index.json", {})
+        rows = [r for r in (index.get("versions") or []) if r.get("version") != archive.name]
+        prior = next((r for r in index.get("versions") or [] if r.get("version") == archive.name), {})
+        files = copied["files"]
+        rows.append(
+            {
+                "version": archive.name,
+                "run": run.slug,
+                "run_dir": str(run.path.resolve()),
+                "created_at": prior.get("created_at") or now,
+                "updated_at": now,
+                "tests": sum(
+                    1
+                    for k in files
+                    if k.startswith("tests/") and k.count("/") == 1 and k not in ("tests/index.json", "tests/test.sh")
+                ),
+                "decisions": len(_read_json(dest / "decisions.json", []) or []),
+                "wiki_pages": sum(1 for k in files if k.startswith("wiki/") and k.endswith(".md")),
+            }
+        )
+        rows.sort(key=lambda r: r["created_at"])
+        _write_json(root / "index.json", {"domain": slug, "versions": rows})
+        return dest
 
 
 def try_snapshot(run_dir: Path, label: str, **kwargs: Any) -> List[str]:

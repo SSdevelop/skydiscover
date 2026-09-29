@@ -47,13 +47,13 @@ and do not hand back a plan in place of pages.
 ## Layout
 
 You write the `wiki/` folder of a domain's knowledge base, `<kb>/wiki/` (`spec.paths domain
-"<name>"` prints `<kb>`, by default `~/.skydiscover/<domain>/`; the run's `task.md` names the
+"<name>"` prints `<kb>`, by default `.skydiscover/kb/<domain>/`; the run's `task.md` names the
 domain); the `tests/` and `decisions.json` beside it are `run finish`'s.
 The Spec Builder reads `sources/` to reuse a system pinned at an exact commit; the Auditor
 reads `hacks/` as the known-hack catalog.
 
 ```
-<home>/                   # ~/.skydiscover by default
+<home>/                   # <project>/.skydiscover/kb by default
 ├── shared/wiki/hacks/    # reward hacks that apply to every domain
 └── <domain>/             # one folder per domain (kv-store, compiler, rl-framework, ...)
     ├── tests/            # kept tests saved by run finish (not yours to write)

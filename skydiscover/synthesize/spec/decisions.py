@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .findings import Finding, Findings, new_id
-from .paths import Domain, Run
+from .paths import Domain, Run, near_run
 
 SOURCE = "question"  # the `source` of every row that answers a question from questions.json
 
@@ -116,6 +116,7 @@ def answer(run: Run) -> List[Finding]:
     return added
 
 
+@near_run
 def _settled_by_user(run: Run) -> Dict[str, Finding]:
     """The questions the user answered in earlier runs of this domain, from the knowledge base's
     decisions.json; reuse needs the same project, question, and options."""
@@ -223,8 +224,9 @@ def export(run: Run) -> Path:
 # ---------------------------------------------------------------------------------- knowledge base
 
 
+@near_run
 def kept_decisions(run_dir: Path, domain: Optional[str] = None) -> Findings:
-    """The knowledge base this run feeds: ~/.skydiscover/<domain>/decisions.json. The domain is the
+    """The knowledge base this run feeds: .skydiscover/kb/<domain>/decisions.json. The domain is the
     `domain:` line of the run's task.md front matter unless given explicitly."""
     slug = domain or Run(run_dir).domain()
     if not slug:

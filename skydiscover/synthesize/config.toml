@@ -7,5 +7,8 @@ runs = ".skydiscover"
 # Published results, one <slug>_<timestamp>/ folder per run.
 outputs = "outputs/synthesize"
 
-# The knowledge base: what earlier runs learned, one folder per domain (tests, decisions, wiki).
-home = "~/.skydiscover"
+# The knowledge base: what every run in the project learned, one folder per domain (tests,
+# decisions, wiki, each run's snapshots, and one version of the knowledge base per run). Unset, it is
+# <project>/<runs>/kb, i.e. .skydiscover/kb/ in the project. A relative value is taken from the
+# project; an absolute one (e.g. "~/.skydiscover") shares one knowledge base across projects.
+# home = ".skydiscover/kb"

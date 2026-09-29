@@ -1,6 +1,6 @@
 # What every file in the knowledge base must contain.
 #
-# The knowledge base (~/.skydiscover/<domain>/wiki/) is a folder of markdown files, one per thing
+# The knowledge base (.skydiscover/kb/<domain>/wiki/) is a folder of markdown files, one per thing
 # learned about a kind of system: a source repository that was read, a property such a system
 # guarantees, a benchmark, a known way to cheat the benchmark. Each file starts with a header of
 # `key: value` lines, and the header's `kind:` says which of the things below the file is about.

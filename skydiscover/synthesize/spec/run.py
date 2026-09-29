@@ -5,7 +5,7 @@
                                                   save new tests and the user's answers; publish the result;
                                                   snapshot the whole run into <kb>/runs/
 
-The domain names the knowledge base folder (~/.skydiscover/<domain>/); by default it is the `domain:` line
+The domain names the knowledge base folder (.skydiscover/kb/<domain>/); by default it is the `domain:` line
 of the run's task.md front matter.
 
 Both exit 1 on a problem and 2 when the run dir does not exist; finish is safe to repeat.
@@ -31,7 +31,7 @@ from . import checkpoint as artifact_store
 from . import kept_tests
 from .decisions import kept_decisions, save
 from .findings import Findings
-from .paths import TEST_SCRIPT, Domain, Run, home, project_of, shared_wiki, test_files
+from .paths import TEST_SCRIPT, Domain, Run, home, near_run, project_of, shared_wiki, test_files
 from .render import passed_final_tests, render_spec
 
 # check
@@ -172,6 +172,7 @@ def _read_json(path: Path):
         return None
 
 
+@near_run
 def check(run_dir: Path) -> Tuple[bool, List[str], List[str], List[str]]:
     """(ok, report lines, problems, warnings). ok is False when a required file is missing or
     empty; warnings never change ok."""
@@ -398,6 +399,7 @@ def _token_lines(run: Run) -> List[str]:
     ]
 
 
+@near_run
 def finish(
     run_dir: Path,
     domain: Optional[str] = None,

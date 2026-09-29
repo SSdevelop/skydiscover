@@ -25,7 +25,7 @@ Your system lands in `outputs/synthesize/<slug>_<timestamp>/best/artifact/`. Bes
 says what it guarantees and how it scored, `tests/` holds the tests it passes, and `checkpoints/`
 every scored iteration.
 
-What the run learned about this kind of system is kept in `~/.skydiscover/<domain>/` for the next
+What the run learned about this kind of system is kept in `.skydiscover/kb/<domain>/` for the next
 run. Tests are written in whatever language suits the system; proofs in Rocq or Lean.
 
 | Start here | What you get |
@@ -43,7 +43,7 @@ scores it, and the Critic guides the next round.
 
 Every specification misses something, so the Auditor looks for reward hacks (changes that raise the
 score while breaking what you meant) and turns each one into a new test. Those tests, and your
-answers, are kept in `~/.skydiscover/<domain>/` for the next run.
+answers, are kept in `.skydiscover/kb/<domain>/` for the next run.
 
 | Approach | Use it when | How correctness is checked |
 |:---|:---|:---|

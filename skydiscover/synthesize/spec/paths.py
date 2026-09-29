@@ -1,19 +1,26 @@
-"""Where SkyDiscover-Synthesize keeps its files. Three places, one word each:
+"""Where SkyDiscover-Synthesize keeps its files. Three places, one word each, all in the project:
 
     outputs/synthesize/<slug>_<timestamp>/ the result: best/, checkpoints/, history.json (see checkpoint.py)
     .skydiscover/<slug>/              the run: the agents' working files, one folder per phase (Run)
-    ~/.skydiscover/<domain>/          knowledge base: tests, decisions, and wiki pages kept across runs (Domain)
+    .skydiscover/kb/<domain>/         knowledge base: tests, decisions, wiki pages, every run's
+                                      snapshots, and one version of the knowledge base per run (Domain)
 
-config.toml sets `runs` and `home`; $SKYDISCOVER_RUNS and $SKYDISCOVER_HOME override them. Every
-other path derives from these two, here, so no script or brief spells a layout of its own.
+The knowledge base belongs to the project, not to a run: every run in the project reads it and adds
+to it, and each run leaves its own version under <domain>/versions/. config.toml sets `runs`,
+`outputs`, and optionally `home`; $SKYDISCOVER_RUNS, $SKYDISCOVER_OUTPUTS, and $SKYDISCOVER_HOME
+override them. Every other path derives from these, here, so no script or brief spells a layout of
+its own.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
 import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -65,7 +72,11 @@ except ModuleNotFoundError:  # Python 3.10 (supported per requires-python) uses 
     except ModuleNotFoundError:  # a bare interpreter running a hook: defaults apply
         tomllib = None
 
-_DEFAULTS = {"runs": ".skydiscover", "home": "~/.skydiscover", "outputs": "outputs/synthesize"}
+# `home` has no fixed default: the knowledge base is <project>/<runs>/kb (see home()).
+_DEFAULTS = {"runs": ".skydiscover", "home": "", "outputs": "outputs/synthesize"}
+
+# The folder inside the runs folder that holds the knowledge base; no run may take its name.
+KB_DIR = "kb"
 
 
 # ------------------------------------------------------------------------------------ the two roots
@@ -92,10 +103,68 @@ def _load(root: Optional[Path] = None) -> Dict[str, Any]:
     return {k: v for k, v in doc.items() if k in _DEFAULTS and isinstance(v, str)}
 
 
+# The run a caller is working for, so the knowledge base is found next to that run whatever the
+# process's cwd is (an agent may have cd'ed elsewhere). Set with `near(run_dir)`.
+_NEAR: ContextVar[Optional[Path]] = ContextVar("skydiscover_near", default=None)
+
+
+@contextmanager
+def near(run_dir: Path):
+    """Resolve the knowledge base from the project holding `run_dir` inside this block."""
+    token = _NEAR.set(Path(run_dir).resolve())
+    try:
+        yield
+    finally:
+        _NEAR.reset(token)
+
+
+def near_run(fn):
+    """Decorate a function whose first argument is a run directory (or a Run): inside it, the
+    knowledge base resolves from that run's project."""
+
+    @functools.wraps(fn)
+    def wrapper(run_dir, *args, **kwargs):
+        with near(Path(run_dir)):
+            return fn(run_dir, *args, **kwargs)
+
+    return wrapper
+
+
+def project_root(start: Optional[Path] = None) -> Optional[Path]:
+    """The project: the nearest of `start` (default: the run set by near(), else $SKYDISCOVER_RUN,
+    else the cwd) and its parents that holds the runs folder. The home directory is never one: its
+    ~/.skydiscover is where earlier releases kept a shared knowledge base, not a project's runs.
+    None when runs live at an absolute path, or no such folder exists yet."""
+    rel = runs()
+    if rel.is_absolute():
+        return None
+    if start is None:
+        env_run = os.environ.get("SKYDISCOVER_RUN")
+        start = _NEAR.get() or (Path(env_run) if env_run else Path.cwd())
+    here = Path(start).resolve()
+    user_home = Path.home().resolve()
+    for d in (here, *here.parents):
+        if d == user_home:
+            break
+        if (d / rel).is_dir():
+            return d
+    return None
+
+
 def home(root: Optional[Path] = None) -> Path:
-    """Knowledge base root: $SKYDISCOVER_HOME, else `home` in config.toml, else ~/.skydiscover."""
+    """Knowledge base root: $SKYDISCOVER_HOME, else `home` in config.toml (relative to the project),
+    else <project>/<runs>/kb, i.e. .skydiscover/kb/ beside the project's runs. With no project found
+    yet, the current directory is taken as the project."""
     raw = os.environ.get("SKYDISCOVER_HOME") or _load(root).get("home") or _DEFAULTS["home"]
-    return Path(raw).expanduser()
+    if raw:
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            return path
+        return (project_root() or Path.cwd()) / path
+    rel = runs(root)
+    if rel.is_absolute():
+        return rel / KB_DIR
+    return (project_root() or Path.cwd()).resolve() / rel / KB_DIR
 
 
 def runs(root: Optional[Path] = None) -> Path:
@@ -139,6 +208,8 @@ def check_slug(slug: str) -> str:
             f"bad run slug {slug!r}: use a short kebab name (lowercase letters, digits, '-', '_', "
             f"'.'), no '/' and no leading '.'"
         )
+    if s == KB_DIR:
+        raise ValueError(f"run slug {s!r} is reserved: {runs()}/{KB_DIR}/ is the knowledge base")
     return s
 
 
@@ -551,11 +622,13 @@ def resolve_decision_log(arg: str) -> Path:
 class Domain:
     """The knowledge base for one domain: what earlier runs in that domain learned, in one folder.
 
-    ~/.skydiscover/<domain>/
+    <project>/.skydiscover/kb/<domain>/
     ├── tests/           kept tests from finished runs, with index.json
     ├── decisions.json   the user's answers and confirmed reward hacks, saved at run finish
-    ├── runs/            every run in the domain, snapshotted whole at each checkpoint (archive.py)
-    └── wiki/            optional pages kb-builder writes: sources, properties, hacks, designs
+    ├── wiki/            optional pages kb-builder writes: sources, properties, hacks, designs
+    ├── runs/            every run in the domain, snapshotted whole per iteration (archive.py)
+    └── versions/        one version of this knowledge base per run: tests/, decisions.json, and
+                         wiki/ as that run left them (archive.py); index.json lists them in order
     """
 
     def __init__(self, slug: str, root: Optional[Path] = None):
@@ -586,6 +659,11 @@ class Domain:
     def runs(self) -> Path:
         """One folder per run, each holding a snapshot of the whole run directory per iteration."""
         return self.path / "runs"
+
+    @property
+    def versions(self) -> Path:
+        """One folder per run: this knowledge base as that run left it."""
+        return self.path / "versions"
 
 
 # Folders under home that are not a domain (dot-folders are never one either).

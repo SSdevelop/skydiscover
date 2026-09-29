@@ -1,6 +1,6 @@
 # The Knowledge Base Wiki
 
-What earlier runs in a domain learned, as markdown pages under `~/.skydiscover/<domain>/wiki/`.
+What earlier runs in a domain learned, as markdown pages under `.skydiscover/kb/<domain>/wiki/`.
 The `kb-builder` agent writes them once for a new domain; later runs read them. A run works
 without them.
 
@@ -37,4 +37,4 @@ python3 $K index      # rebuild index/
 
 `schema.yaml` lists the header fields each kind of page needs; `tags.yaml` the allowed tags (a domain
 adds its own in `<domain>/wiki/tags.yaml`). `kbtool.py` is the only thing that writes `index/`.
-`--root <folder>` or `SKYDISCOVER_HOME` points at a knowledge base other than `~/.skydiscover`.
+`--root <folder>` or `SKYDISCOVER_HOME` points at a knowledge base other than the project's `.skydiscover/kb`.

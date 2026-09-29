@@ -62,8 +62,27 @@ def _cfg(tmp_path, body):
 
 def test_defaults_with_no_config(tmp_path, monkeypatch):
     _clean_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
     assert settings.runs(tmp_path) == pathlib.Path(".skydiscover")
-    assert settings.home(tmp_path) == pathlib.Path.home() / ".skydiscover"
+    # the knowledge base lives in the project, beside its runs
+    assert settings.home(tmp_path) == tmp_path.resolve() / ".skydiscover" / "kb"
+
+
+def test_the_knowledge_base_is_found_from_the_project_wherever_the_cwd_is(tmp_path, monkeypatch):
+    _clean_env(monkeypatch)
+    project = tmp_path / "proj"
+    run = settings.Run(project / ".skydiscover" / "kv").create()
+    deep = project / "src" / "deep"
+    deep.mkdir(parents=True)
+    kb = project.resolve() / ".skydiscover" / "kb"
+    monkeypatch.chdir(deep)  # below the project: found by walking up
+    assert settings.home() == kb
+    monkeypatch.chdir(tmp_path)  # outside it: the run the caller works for decides
+    with settings.near(run.path):
+        assert settings.home() == kb
+        assert settings.Domain("kv store").path == kb / "kv-store"
+    with pytest.raises(ValueError):
+        settings.check_slug("kb")  # the knowledge base's folder is not a run
 
 
 def test_config_toml_is_read(tmp_path, monkeypatch):

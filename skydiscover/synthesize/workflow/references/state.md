@@ -68,7 +68,7 @@ or reworded questions need confirmation. The old answer remains in the log, not 
 
 ## The Knowledge Base: State Kept Across Runs
 
-What outlives a run is the domain's knowledge base, one folder per domain under `~/.skydiscover/`
+What outlives a run is the domain's knowledge base, one folder per domain under the project's `.skydiscover/kb/`
 (`SKYDISCOVER_HOME`).
 The domain is the `domain:` line of the run's `task.md`, spelled the one way `spec.paths domain`
 spells it, so two runs on "KV Store" and "kv-store" share a folder.
@@ -78,6 +78,7 @@ spells it, so two runs on "KV Store" and "kv-store" share a folder.
 | `<domain>/tests/` | kept tests from finished runs, the last run's `test.sh`, and `index.json` (property id, keywords) | `run finish`, automatically |
 | `<domain>/decisions.json` | every answer the user gave and every confirmed reward hack, saved from decision logs | `run finish`, automatically |
 | `<domain>/runs/` | every run in the domain: a snapshot of the whole run directory per checkpoint, per finished role, per turn, and at finish; the session transcripts; `index.json` and `iterations.md` with each iteration's checkpoint, score, and tokens by role | `spec.checkpoint snapshot`, `hooks/token_usage.py`, and `run finish`, automatically |
+| `<domain>/versions/<run>/` | the knowledge base (tests, decisions, wiki) as each run left it: one version per run, so two runs leave two; `versions/index.json` lists them in order | every snapshot of that run, automatically |
 | `<domain>/tests/.history/` | every kept test body or `test.sh` a later run replaced, and every run body held back | `run finish`, automatically |
 | `<domain>/wiki/` | wiki pages: reference systems pinned to a commit, properties, benchmarks, profiling, tests, known hacks, designs | `kb-builder`, on a Standard or Thorough budget |
 | `shared/wiki/` | pages that hold for every domain | `kb-builder` |

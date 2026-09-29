@@ -302,3 +302,34 @@ def test_specification_work_is_iteration_zero(tmp_path, hook):
     assert assign(t("2026-01-01T00:15:00Z")) == 0
     assert assign(t("2026-01-01T00:30:00Z")) == 1
     assert assign(t("2026-01-01T02:00:00Z")) == 2 == assign(None)
+
+
+def test_each_run_leaves_its_own_version_of_the_knowledge_base(tmp_path, monkeypatch):
+    """No SKYDISCOVER_HOME: the knowledge base is <project>/.skydiscover/kb/, found from the run even
+    with the cwd elsewhere. A run today and a run tomorrow leave two versions; the second run's
+    changes never touch the first run's version."""
+    monkeypatch.delenv("SKYDISCOVER_HOME", raising=False)
+    monkeypatch.chdir(tmp_path)
+    today = _run(tmp_path)
+    kb = (tmp_path / "project" / ".skydiscover" / "kb").resolve()
+    archive.snapshot(today.path, "checkpoint_1")
+    kept_tests.sync(today.path, "kv store")  # what run finish saves
+    archive.snapshot(today.path, "finish")
+    assert (kb / "kv-store" / "tests" / "capacity.py").is_file()
+
+    tomorrow = Run(today.path.parent / "kv-2").create()
+    tomorrow.task.write_text(today.task.read_text(), encoding="utf-8")
+    tomorrow.tests.mkdir(parents=True)
+    (tomorrow.tests / "test.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (tomorrow.tests / "latency.py").write_text("# Latency is bounded.\n", encoding="utf-8")
+    kept_tests.sync(tomorrow.path, "kv store")
+    archive.snapshot(tomorrow.path, "finish")
+
+    versions = kb / "kv-store" / "versions"
+    index = json.loads((versions / "index.json").read_text())
+    assert [v["run"] for v in index["versions"]] == ["kv", "kv-2"]
+    first, second = (versions / v["version"] for v in index["versions"])
+    assert (first / "tests" / "capacity.py").is_file() and not (first / "tests" / "latency.py").exists()
+    assert (second / "tests" / "capacity.py").is_file() and (second / "tests" / "latency.py").is_file()
+    assert [v["tests"] for v in index["versions"]] == [1, 2]
+    assert not (second / "runs").exists() and not (second / "versions").exists()
