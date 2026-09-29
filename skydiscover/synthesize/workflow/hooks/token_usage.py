@@ -254,8 +254,15 @@ def usage(
 
 def _write(path: Path, doc: Dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
-    tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()  # our own half-written temp file, never the data
+        except OSError:
+            pass
+        raise
 
 
 def _done_time(run: Path) -> Optional[float]:
@@ -274,12 +281,16 @@ def record(
     until: Optional[float] = None,
     role: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Recount one session from its transcripts and rewrite its entry and the run's totals."""
-    assign = iteration_of(run)
-    counted = usage(session_transcripts(transcript), until=until or _done_time(run), assign=assign)
+    """Recount one session from its transcripts and rewrite its entry and the run's totals. The
+    count is taken under the lock, so of two firings that finish together the later one always
+    writes the later count."""
     with open(run / f".{USAGE_FILE}.lock", "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:
+            assign = iteration_of(run)
+            counted = usage(
+                session_transcripts(transcript), until=until or _done_time(run), assign=assign
+            )
             doc = _read(run / USAGE_FILE)
             doc = doc if isinstance(doc, dict) else {}
             sessions = doc.get("sessions") if isinstance(doc.get("sessions"), dict) else {}
@@ -463,12 +474,32 @@ def project_transcripts(project: Path, run: Path, projects_dir: Optional[Path]) 
     return out
 
 
+def error_logs(run: Path) -> List[Path]:
+    """Where a hook error for this run may have been written, most specific first: the run
+    directory, the project's runs folder, then a per-user file in the temp directory for when
+    neither can be written."""
+    import tempfile
+
+    return [
+        run / ERRORS,
+        run.parent / ERRORS,
+        Path(tempfile.gettempdir()) / f"skydiscover-{os.getuid()}-{ERRORS}",
+    ]
+
+
 def _log_error(run: Path, what: str) -> None:
-    try:
-        with open(run / ERRORS, "a", encoding="utf-8") as f:
-            f.write(f"[{_now()}] {what}\n")
-    except OSError:
-        pass
+    """Record a hook error. Never silently: when a place cannot be written, the next one is tried,
+    and each line says which run it belongs to."""
+    line = f"[{_now()}] run={run} {what}\n"
+    for path in error_logs(run):
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+            return
+        except OSError as e:
+            line = f"{line.rstrip()} (could not write {path}: {e})\n"
 
 
 def _detached(fn: Callable[[], None]) -> None:

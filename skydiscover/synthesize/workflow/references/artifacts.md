@@ -207,6 +207,20 @@ Nothing a run produced is deleted:
 - a failed or unavailable final check blocks publication and keeps the working files, and a
   proof-driven run always keeps them for proof replay.
 
+### Guards
+
+- `hooks/budget_guard.py` (Stop): during the synthesis loop the lead may not end its turn while
+  fewer checkpoints exist than `<run>/budget.json` (`spec.run budget`) allows, unless
+  `spec.run pause` asked for one stop (kept afterwards as `pause.<time>.json`), the run is done,
+  or it has already refused five times without a new checkpoint. Every decision is logged to
+  `<run>/budget_guard.log.jsonl`.
+- `hooks/history_guard.py` (PreToolUse): agents may not delete, move, or overwrite the knowledge
+  base, a run's snapshots or versions, or a checkpoint. Editing a knowledge-base file is allowed,
+  and the previous version is first kept under `<kb>/.history/<time>/`. Bytecode, `*.tmp` files,
+  and `<kb>/.cache/` are exempt.
+- A hook error is written to `<run>/hook_errors.log`, else the runs folder's, else a per-user file
+  in the temp directory, and `run finish` prints any it finds.
+
 ### Token usage
 
 `hooks/token_usage.py` runs when a turn, a subagent, or a session ends and before a compaction

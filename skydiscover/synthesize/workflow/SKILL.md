@@ -189,7 +189,10 @@ One light question, skipped if the answer is obvious. Ask exactly:
 >
 > Quick (≈20 iterations) · Standard (≈60 iterations) · Thorough (≈200 iterations)
 
-Record the choice in the decision log. The run stops when the budget is spent.
+Record the choice in the decision log and with `spec.run budget <run> <N>`. The run stops when the
+budget is spent: a hook (`hooks/budget_guard.py`) refuses to let you end your turn during the
+synthesis loop while fewer than N checkpoints exist. When you truly need the user's input
+mid-loop, run `spec.run pause <run> --reason "<question>"` first; that lets exactly one turn end.
 
 If the knowledge base was cold at Step 1, decide here. On `Standard` or `Thorough`, run the
 kb-builder (`agents/1-specification/kb-builder.md`) once, in the background, pointed at this run's
@@ -443,6 +446,8 @@ spec.checkpoint inputs <run>                 capture before measuring; store as 
 spec.checkpoint snapshot <run> [--became-best]
 spec.checkpoint stamp-audit <run> [--finding <decision-log id>]...
 spec.run check <run>
+spec.run budget <run> <N>                    record the iteration budget (Step 4)
+spec.run pause <run> --reason "<question>"   let the next turn end to ask the user, mid-loop
 spec.run finish <run> --export-to . [--production-ready] [--delete-run] [--refresh-tests]
 spec.archive list <domain>                  every archived run and its per-iteration snapshots
 spec.archive restore <snapshot> <dest>      copy a snapshot back out as a working run directory

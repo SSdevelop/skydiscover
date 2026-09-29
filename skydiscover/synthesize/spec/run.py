@@ -4,6 +4,8 @@
     run finish <run_dir> [domain] [--export-to <path>] [--delete-run] [--refresh-tests] [--production-ready]
                                                   save new tests and the user's answers; publish the result;
                                                   snapshot the whole run into <kb>/runs/
+    run budget <run_dir> <iterations>             record the iteration budget the user chose (Step 4)
+    run pause  <run_dir> --reason "<question>"    let the lead end its next turn to ask the user
 
 The domain names the knowledge base folder (.skydiscover/kb/<domain>/); by default it is the `domain:` line
 of the run's task.md front matter.
@@ -384,6 +386,33 @@ def _reclaim_transient(run: Run) -> List[str]:
     return lines
 
 
+def _hook_error_lines(run: Run) -> List[str]:
+    """The errors the hooks recorded for this run (hooks/token_usage.py error_logs(): the run dir,
+    the runs folder, or the temp directory), so none goes unseen at the end of a run."""
+    places = [
+        run.path / "hook_errors.log",
+        run.path.parent / "hook_errors.log",
+        Path(tempfile.gettempdir()) / f"skydiscover-{os.getuid()}-hook_errors.log",
+    ]
+    found = []
+    for place in places:
+        try:
+            lines = place.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        needle = f"{run.path.resolve().parent.name}/{run.path.name}"
+        mine = [ln for ln in lines if place == places[0] or needle in ln]
+        if mine:
+            found.append((place, mine))
+    if not found:
+        return ["  hook errors: none"]
+    out = []
+    for place, mine in found:
+        out.append(f"  hook errors: WARNING: {len(mine)} line(s) in {place}; the last:")
+        out.append(f"    {mine[-1][:300]}")
+    return out
+
+
 def _token_lines(run: Run) -> List[str]:
     """One line with the tokens the run spent, from the file hooks/token_usage.py keeps."""
     doc = artifact_store._read_json(run.token_usage, {})
@@ -465,6 +494,7 @@ def finish(
         lines.append("  decisions: no decision log in the run dir; nothing to save")
 
     lines += _token_lines(run)
+    lines += _hook_error_lines(run)
     if cleanup:
         lines += _reclaim_transient(run)
     lines += archive.try_snapshot(run_dir, "finish", domain=domain, trigger="finish")
@@ -992,15 +1022,59 @@ def delete_run(run_dir: Path, domain: Optional[str] = None) -> str:
     )
 
 
+def main_budget(argv: Optional[List[str]] = None) -> int:
+    """Record the iteration budget in <run>/budget.json; hooks/budget_guard.py holds the lead to it."""
+    ap = argparse.ArgumentParser(prog="run budget", description=main_budget.__doc__)
+    ap.add_argument("run_dir")
+    ap.add_argument("iterations", type=int)
+    args = ap.parse_args(argv)
+    run = Run(args.run_dir)
+    if not run.task.is_file():
+        print(f"run budget: {run.path} is not a run directory (no task.md)", file=sys.stderr)
+        return 2
+    if args.iterations < 1:
+        print("run budget: the budget is at least 1 iteration", file=sys.stderr)
+        return 2
+    artifact_store._write_json(
+        run.path / "budget.json",
+        {"iterations": args.iterations, "set_at": artifact_store._utc_now()},
+    )
+    print(f"budget: {args.iterations} iterations -> {run.path / 'budget.json'}")
+    return 0
+
+
+def main_pause(argv: Optional[List[str]] = None) -> int:
+    """Let the lead end its next turn before the budget is spent, to ask the user something. One
+    stop only; hooks/budget_guard.py then keeps the request as pause.<time>.json."""
+    ap = argparse.ArgumentParser(prog="run pause", description=main_pause.__doc__)
+    ap.add_argument("run_dir")
+    ap.add_argument("--reason", required=True, help="what the lead needs from the user")
+    args = ap.parse_args(argv)
+    run = Run(args.run_dir)
+    if not run.task.is_file():
+        print(f"run pause: {run.path} is not a run directory (no task.md)", file=sys.stderr)
+        return 2
+    artifact_store._write_json(
+        run.path / "pause.json", {"reason": args.reason, "at": artifact_store._utc_now()}
+    )
+    print(f"pause: your next turn may end to ask the user: {args.reason}")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == "check":
         return main_check(args[1:])
     if args and args[0] == "finish":
         return main_finish(args[1:])
+    if args and args[0] == "budget":
+        return main_budget(args[1:])
+    if args and args[0] == "pause":
+        return main_pause(args[1:])
     usage = (
         "usage: run check <run_dir> | run finish <run_dir> [domain] [--export-to <path>] "
-        "[--delete-run] [--refresh-tests] [--production-ready]"
+        "[--delete-run] [--refresh-tests] [--production-ready] | run budget <run_dir> <iterations> "
+        "| run pause <run_dir> --reason <question>"
     )
     if args and args[0] in ("-h", "--help"):
         print(usage)

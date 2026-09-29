@@ -20,6 +20,15 @@
             "timeout": 60
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/budget_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "SubagentStop": [
@@ -63,6 +72,11 @@
             "type": "command",
             "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/clone_reuse_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/history_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
+            "timeout": 30
           }
         ]
       },
@@ -73,6 +87,11 @@
             "type": "command",
             "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/framework_edit_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/history_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
+            "timeout": 30
           }
         ]
       }

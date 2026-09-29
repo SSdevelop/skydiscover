@@ -82,9 +82,9 @@ prune_broken() {
 # Claude Code: merge the hook and env config into .claude/settings.local.json without touching
 # anything else in it. Backs the file up once and writes atomically.
 write_claude_settings() {
-python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
 import json, os, shutil, sys, uuid
-path, hook, guard, edit_guard, tokens = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+path, hook, guard, edit_guard, tokens, budget, history = sys.argv[1:8]
 try:
     with open(path, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -152,6 +152,29 @@ for event in ("Stop", "SubagentStop", "PreCompact", "SessionEnd"):
                 h.setdefault("timeout", GUARD_TIMEOUT)
     if not tfound:
         entries.append({"hooks": [{"type": "command", "command": tokens, "timeout": GUARD_TIMEOUT}]})
+
+
+def ensure(event, matcher, script, command):
+    """One entry per (event, matcher) running `script`: update its command in place, else add it."""
+    entries = cfg["hooks"].setdefault(event, [])
+    for e in entries:
+        if isinstance(e, dict) and e.get("matcher") == matcher:
+            for h in e.get("hooks", []):
+                if isinstance(h, dict) and script in str(h.get("command", "")):
+                    h["command"] = command
+                    h.setdefault("timeout", GUARD_TIMEOUT)
+                    return
+    entry = {"hooks": [{"type": "command", "command": command, "timeout": GUARD_TIMEOUT}]}
+    if matcher is not None:
+        entry["matcher"] = matcher
+    entries.append(entry)
+
+
+# The budget guard: the lead may not end its turn before the iteration budget is spent.
+ensure("Stop", None, "budget_guard.py", budget)
+# The history guard: agents may not delete, move, or overwrite the saved history.
+ensure("PreToolUse", "Bash", "history_guard.py", history)
+ensure("PreToolUse", EDIT_MATCHER, "history_guard.py", history)
 if json.dumps(cfg, sort_keys=True) != before:
     bak = f"{path}.bak.{os.getpid()}"
     if os.path.exists(path) and not os.path.exists(bak):
@@ -235,6 +258,8 @@ install_claude() {
     guard_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/clone_reuse_guard.py"; [ -f "$p" ] || p="'"$hooks"'/clone_reuse_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
     edit_guard_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/framework_edit_guard.py"; [ -f "$p" ] || p="'"$hooks"'/framework_edit_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
     token_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/token_usage.py"; [ -f "$p" ] || p="'"$hooks"'/token_usage.py"; [ -f "$p" ] && exec python3 "$p" --hook || exit 0'
+    budget_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/budget_guard.py"; [ -f "$p" ] || p="'"$hooks"'/budget_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
+    history_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/history_guard.py"; [ -f "$p" ] || p="'"$hooks"'/history_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
   else
     # Absolute paths, guarded the same way: a checkout that moved must not turn every Bash call
     # into a blocked PreToolUse (exit 2) or every task completion into a failed hook.
@@ -242,9 +267,11 @@ install_claude() {
     guard_cmd='p="'"$hooks"'/clone_reuse_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
     edit_guard_cmd='p="'"$hooks"'/framework_edit_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
     token_cmd='p="'"$hooks"'/token_usage.py"; [ -f "$p" ] && exec python3 "$p" --hook || exit 0'
+    budget_cmd='p="'"$hooks"'/budget_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
+    history_cmd='p="'"$hooks"'/history_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
   fi
   settings="$target/.claude/settings.local.json"
-  if write_claude_settings "$settings" "$hook_cmd" "$guard_cmd" "$edit_guard_cmd" "$token_cmd"; then
+  if write_claude_settings "$settings" "$hook_cmd" "$guard_cmd" "$edit_guard_cmd" "$token_cmd" "$budget_cmd" "$history_cmd"; then
     echo "Configured $settings (the hook that runs the tests before anything is delivered, the PreToolUse guards, and the token usage file); restart Claude Code to load it."
     echo "Optional: set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in that file's env to run the roles as an agent team."
   else
