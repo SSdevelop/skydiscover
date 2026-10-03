@@ -75,6 +75,13 @@ its evidence (`workflow/scripts/kb/README.md`). Those pages seed the properties,
 and the test seeds. A missing or thin wiki means you clone and mine; `kb-builder` later folds
 what you ground back in (`references/state.md`).
 
+0. **Reuse an earlier run's discovery when it exists.** If `specification/references/reuse.json`
+   is present, the lead copied a previous run's verified specs (`spec.reuse`). Do not mine the
+   systems it lists as `fresh` again: their specs, citation checks, and tests stand. For each
+   system in `to_reverify`, re-check only its citations at the clone's current commit (re-clone it
+   if its `clone` is `missing`) and update its `spec.json` and `verification.json`. Add systems
+   only where the task needs one the earlier run did not cover. Then go to the property questions:
+   they belong to this task and are always written fresh. Report what was reused.
 1. **Identify the reference systems.** Use `gh` search, `git clone`, and `WebFetch` (and
    `WebSearch` when available; an org policy that disables `WebSearch` never disables the others).
    Never invent the reference set.

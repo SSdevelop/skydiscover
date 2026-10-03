@@ -77,6 +77,11 @@
             "type": "command",
             "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/history_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/watchdog.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
+            "timeout": 30
           }
         ]
       },
@@ -91,6 +96,16 @@
           {
             "type": "command",
             "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/history_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Task|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/loop_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
             "timeout": 30
           }
         ]

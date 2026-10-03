@@ -126,7 +126,16 @@ def _published_output(run: Path) -> Optional[Path]:
 
 
 def _checkpoint_times(run: Path) -> List[Tuple[int, float]]:
-    """(K, when checkpoint_K was written) for every checkpoint, in order."""
+    """(K, when iteration K finished) for every finished iteration, in order: from the iteration    record (synthesis/bench/iterations.json, spec/iterations.py), which also records rounds that
+    failed without a checkpoint; for a run without one, from its checkpoints."""
+    rows = _read(run / "synthesis" / "bench" / "iterations.json")
+    if isinstance(rows, list) and rows:
+        marks = []
+        for r in rows:
+            when = _parse_time(r.get("at")) if isinstance(r, dict) else None
+            if when is not None:
+                marks.append((int(r.get("n") or len(marks) + 1), when))
+        return sorted(marks)
     out = _published_output(run)
     if out is None or not (out / "checkpoints").is_dir():
         return []
@@ -143,7 +152,8 @@ def _checkpoint_times(run: Path) -> List[Tuple[int, float]]:
             except OSError:
                 continue
         found.append((int(m.group(1)), when))
-    return sorted(found)
+    # checkpoint numbers are not iteration numbers once a round has failed; order is what counts
+    return [(i, when) for i, (_, when) in enumerate(sorted(found, key=lambda kv: kv[0]), 1)]
 
 
 def _synthesis_start(run: Path) -> Optional[float]:

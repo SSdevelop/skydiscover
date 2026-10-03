@@ -4,7 +4,9 @@
     run finish <run_dir> [domain] [--export-to <path>] [--delete-run] [--refresh-tests] [--production-ready]
                                                   save new tests and the user's answers; publish the result;
                                                   snapshot the whole run into <kb>/runs/
-    run budget <run_dir> <iterations>             record the iteration budget the user chose (Step 4)
+    run budget <run_dir> <iterations> [--attempts A] [--audit-every M]
+                                                  record the iteration budget the user chose (Step 4),
+                                                  the coding attempts per iteration, the audit interval
     run pause  <run_dir> --reason "<question>"    let the lead end its next turn to ask the user
 
 The domain names the knowledge base folder (.skydiscover/kb/<domain>/); by default it is the `domain:` line
@@ -132,6 +134,14 @@ def _has_wiki_reuse(run: Run) -> bool:
     return False
 
 
+def _has_run_reuse(run: Run) -> bool:
+    """True when acquisitions.json records discovery copied from an earlier run's snapshot
+    (spec/reuse.py) and that snapshot still exists."""
+    acq = _read_json(run.acquisitions)
+    rec = acq.get("reused_from_run") if isinstance(acq, dict) else None
+    return isinstance(rec, dict) and Path(str(rec.get("snapshot") or "")).is_dir()
+
+
 def _reference_specs(run: Run) -> Tuple[List[str], List[str]]:
     """(names whose spec.json has {source, axes}, names whose spec.json has neither)."""
     good: List[str] = []
@@ -225,6 +235,8 @@ def check(run_dir: Path) -> Tuple[bool, List[str], List[str], List[str]]:
         row("ok", sources, "git clone present")
     elif _has_wiki_reuse(run):
         row("ok", sources, "source reused from the wiki")
+    elif _has_run_reuse(run):
+        row("ok", sources, "discovery reused from an earlier run (spec.reuse)")
     else:
         row("MISSING", sources, "no git clone, no source reused from the wiki")
         problems.append(
@@ -1027,19 +1039,41 @@ def main_budget(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="run budget", description=main_budget.__doc__)
     ap.add_argument("run_dir")
     ap.add_argument("iterations", type=int)
+    ap.add_argument(
+        "--attempts",
+        type=int,
+        default=5,
+        help="coding-agent launches allowed per iteration before the round is closed as failed "
+        "(hooks/loop_guard.py; default 5)",
+    )
+    ap.add_argument(
+        "--audit-every",
+        type=int,
+        default=15,
+        help="iterations between auditor runs during the loop (default 15, as in the paper); "
+        "Phase 3 reviews always run",
+    )
     args = ap.parse_args(argv)
     run = Run(args.run_dir)
     if not run.task.is_file():
         print(f"run budget: {run.path} is not a run directory (no task.md)", file=sys.stderr)
         return 2
-    if args.iterations < 1:
-        print("run budget: the budget is at least 1 iteration", file=sys.stderr)
+    if min(args.iterations, args.attempts, args.audit_every) < 1:
+        print("run budget: iterations, --attempts, and --audit-every are each at least 1", file=sys.stderr)
         return 2
     artifact_store._write_json(
         run.path / "budget.json",
-        {"iterations": args.iterations, "set_at": artifact_store._utc_now()},
+        {
+            "iterations": args.iterations,
+            "max_coding_attempts": args.attempts,
+            "audit_every": args.audit_every,
+            "set_at": artifact_store._utc_now(),
+        },
     )
-    print(f"budget: {args.iterations} iterations -> {run.path / 'budget.json'}")
+    print(
+        f"budget: {args.iterations} iterations, at most {args.attempts} coding attempts each, "
+        f"auditor every {args.audit_every} -> {run.path / 'budget.json'}"
+    )
     return 0
 
 

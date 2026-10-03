@@ -153,11 +153,16 @@ role brief never uses them.
    never ask the user about it. The knowledge base is **cold** when it has no `wiki/` (P = 0):
    kept tests and findings are this domain's own past output, not grounding in the reference
    systems. Whether a cold knowledge base gets its wiki is decided once, at Step 4.
-3. Run the **spec-builder** (`agents/1-specification/spec-builder.md`) in **discovery mode**. It
-   clones the real reference systems the knowledge base does not already cover at HEAD, extracts a
-   verified spec from each, mines the property questions and the real tests behind them, and writes
-   the artifacts listed in `references/artifacts.md`. Relay only its short summary: the domain and
-   the open properties.
+3. Run `spec.reuse <run>` first. When an earlier run of this domain left its discovery in the
+   knowledge base, it copies that run's verified reference specs into `specification/references/`
+   and writes `references/reuse.json`: the systems still at the commit they were verified at
+   (`fresh`) and those to re-verify or re-clone (`to_reverify`). Then run the **spec-builder**
+   (`agents/1-specification/spec-builder.md`) in **discovery mode**. With `reuse.json` present it
+   re-verifies only `to_reverify`, mines only systems not yet covered, and writes the property
+   questions; otherwise it clones the real reference systems the knowledge base does not already
+   cover at HEAD, extracts a verified spec from each, mines the property questions and the real
+   tests behind them, and writes the artifacts listed in `references/artifacts.md`. Relay only its
+   short summary: the domain, what was reused, and the open properties.
 
 ### Step 2: Answer the Questions
 
@@ -189,9 +194,10 @@ One light question, skipped if the answer is obvious. Ask exactly:
 >
 > Quick (≈20 iterations) · Standard (≈60 iterations) · Thorough (≈200 iterations)
 
-Record the choice in the decision log and with `spec.run budget <run> <N>`. The run stops when the
-budget is spent: a hook (`hooks/budget_guard.py`) refuses to let you end your turn during the
-synthesis loop while fewer than N checkpoints exist. When you truly need the user's input
+Record the choice in the decision log and with `spec.run budget <run> <N> [--attempts A]
+[--audit-every M]` (defaults: 5 coding attempts per iteration, the auditor every 15 iterations, as
+in the paper). The run stops when the budget is spent: a hook (`hooks/budget_guard.py`) refuses to
+let you end your turn during the synthesis loop while fewer than N iterations are finished. When you truly need the user's input
 mid-loop, run `spec.run pause <run> --reason "<question>"` first; that lets exactly one turn end.
 
 If the knowledge base was cold at Step 1, decide here. On `Standard` or `Thorough`, run the
@@ -250,7 +256,12 @@ Run a fresh agent for each step; every brief is in `agents/2-synthesis-loop/`:
    the loop and again whenever the critic calls for a design decision; a parameter sweep inside the
    current design does not need it.
 2. **Coding Agent** (`coding-agent.md`): makes one well-scoped, tested change, runs the fast tests, records the
-   outcome, and exits.
+   outcome, and exits. An iteration gets at most `--attempts` coding agents (`hooks/loop_guard.py`
+   refuses the next launch). When they are spent without a candidate that passes the tests, close
+   the round with `spec.iterations fail <run> --reason "<what was tried, why it failed>"`: it counts
+   toward the budget like a scored one. Restore the best checkpoint's `.verification/source` into
+   `synthesis/impl/` if the working copy is broken, let the critic log what was ruled out, and start
+   the next iteration with the planner.
 3. **Evaluator** (`evaluator.md`, **performance mode**): runs the scored benchmark on a
    test-passing candidate at the declared configuration, appends the leaderboard, names the
    measured bottleneck (or the scored cases lost, when the score is not a rate), and writes the
@@ -258,11 +269,10 @@ Run a fresh agent for each step; every brief is in `agents/2-synthesis-loop/`:
    benchmark scores. The checkpoint binds one coding-agent change to one scored evaluation (the
    artifact bytes and the leaderboard entry); it refuses an unscored artifact, and it is written
    every iteration, never only at publish time.
-4. **Auditor** (`auditor.md`). First state
-   `audit decision: run|skip (reason: ...)`. Run it when the attack surface changed: a new best, the
-   first candidate to beat the baseline, or a change to the audited code, a test, or the
-   specification. Skip it exactly when none of those changed; the test is mechanical, with no
-   judgment about how small a change is. The auditor writes a test for each confirmed hack and
+4. **Auditor** (`auditor.md`). Runs every `--audit-every` iterations (default 15), not after every
+   change: auditing reads the whole implementation and is the most expensive role. First state
+   `audit decision: run|skip (reason: <n> iterations since the last audit)`; `hooks/loop_guard.py`
+   refuses an audit that is not due. Its Phase 3 reviews always run. The auditor writes a test for each confirmed hack and
    writes a completeness stamp (`spec.checkpoint stamp-audit <run>`) even on a clean pass. The selected candidate must carry a current audit
    before any release claim; `run_tests.py --run <run> --production-ready` checks the stamp.
 5. **Critic** (`critic.md`): attributes the results to design choices, returns ranked `file:line`
@@ -446,7 +456,10 @@ spec.checkpoint inputs <run>                 capture before measuring; store as 
 spec.checkpoint snapshot <run> [--became-best]
 spec.checkpoint stamp-audit <run> [--finding <decision-log id>]...
 spec.run check <run>
-spec.run budget <run> <N>                    record the iteration budget (Step 4)
+spec.run budget <run> <N> [--attempts A] [--audit-every M]   record the budget (Step 4)
+spec.iterations fail <run> --reason "..."    close an iteration that spent its attempts unscored
+spec.iterations list <run>                   every finished iteration and how it ended
+spec.reuse <run> [--force]                   copy an earlier run's discovery (Step 1)
 spec.run pause <run> --reason "<question>"   let the next turn end to ask the user, mid-loop
 spec.run finish <run> --export-to . [--production-ready] [--delete-run] [--refresh-tests]
 spec.archive list <domain>                  every archived run and its per-iteration snapshots

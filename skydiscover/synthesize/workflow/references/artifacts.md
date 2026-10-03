@@ -209,8 +209,23 @@ Nothing a run produced is deleted:
 
 ### Guards
 
+- `hooks/loop_guard.py` (PreToolUse on Task/Agent): an iteration gets at most
+  `max_coding_attempts` coding-agent launches (`budget.json`, default 5); at the cap the round is
+  closed with `spec.iterations fail` and counts toward the budget. The auditor runs during the loop
+  only every `audit_every` iterations (default 15); Phase 3 reviews always run. Decisions go to
+  `<run>/loop_guard.log.jsonl`. Finished iterations, scored or failed, are in
+  `synthesis/bench/iterations.json`.
+- `spec.reuse <run>` (Step 1) copies the newest earlier run's discovery of the domain from
+  `<kb>/<domain>/runs/` and writes `specification/references/reuse.json` (fresh vs to re-verify).
+
+- `hooks/watchdog.py` (PreToolUse on Bash): when the loop is under way, no role is working, and
+  nothing under `synthesis/` or in any role's transcript has changed for four hours
+  (`SKYDISCOVER_STALL_SECS`), the lead's next shell command is refused once (at most every 30
+  minutes) with an instruction to act on the newest result: checkpoint it or close the iteration.
+  Refusals go to `<run>/watchdog.log.jsonl`.
 - `hooks/budget_guard.py` (Stop): during the synthesis loop the lead may not end its turn while
-  fewer checkpoints exist than `<run>/budget.json` (`spec.run budget`) allows, unless
+  fewer iterations are finished than `<run>/budget.json` (`spec.run budget`) allows, unless a
+  role is still working (waiting for it is allowed; Claude Code wakes the lead when it ends),
   `spec.run pause` asked for one stop (kept afterwards as `pause.<time>.json`), the run is done,
   or it has already refused five times without a new checkpoint. Every decision is logged to
   `<run>/budget_guard.log.jsonl`.

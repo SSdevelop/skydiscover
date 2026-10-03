@@ -82,9 +82,9 @@ prune_broken() {
 # Claude Code: merge the hook and env config into .claude/settings.local.json without touching
 # anything else in it. Backs the file up once and writes atomically.
 write_claude_settings() {
-python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
+python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" <<'PY'
 import json, os, shutil, sys, uuid
-path, hook, guard, edit_guard, tokens, budget, history = sys.argv[1:8]
+path, hook, guard, edit_guard, tokens, budget, history, loop, watchdog = sys.argv[1:10]
 try:
     with open(path, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -175,6 +175,10 @@ ensure("Stop", None, "budget_guard.py", budget)
 # The history guard: agents may not delete, move, or overwrite the saved history.
 ensure("PreToolUse", "Bash", "history_guard.py", history)
 ensure("PreToolUse", EDIT_MATCHER, "history_guard.py", history)
+# The loop guard: coding attempts per iteration are capped; the auditor runs every N iterations.
+ensure("PreToolUse", "Task|Agent", "loop_guard.py", loop)
+# The watchdog: a lead polling a stalled run is told to act on the newest result.
+ensure("PreToolUse", "Bash", "watchdog.py", watchdog)
 if json.dumps(cfg, sort_keys=True) != before:
     bak = f"{path}.bak.{os.getpid()}"
     if os.path.exists(path) and not os.path.exists(bak):
@@ -260,6 +264,8 @@ install_claude() {
     token_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/token_usage.py"; [ -f "$p" ] || p="'"$hooks"'/token_usage.py"; [ -f "$p" ] && exec python3 "$p" --hook || exit 0'
     budget_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/budget_guard.py"; [ -f "$p" ] || p="'"$hooks"'/budget_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
     history_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/history_guard.py"; [ -f "$p" ] || p="'"$hooks"'/history_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
+    loop_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/loop_guard.py"; [ -f "$p" ] || p="'"$hooks"'/loop_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
+    watchdog_cmd='p="$CLAUDE_PROJECT_DIR/skydiscover/synthesize/workflow/hooks/watchdog.py"; [ -f "$p" ] || p="'"$hooks"'/watchdog.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
   else
     # Absolute paths, guarded the same way: a checkout that moved must not turn every Bash call
     # into a blocked PreToolUse (exit 2) or every task completion into a failed hook.
@@ -269,9 +275,11 @@ install_claude() {
     token_cmd='p="'"$hooks"'/token_usage.py"; [ -f "$p" ] && exec python3 "$p" --hook || exit 0'
     budget_cmd='p="'"$hooks"'/budget_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
     history_cmd='p="'"$hooks"'/history_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
+    loop_cmd='p="'"$hooks"'/loop_guard.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
+    watchdog_cmd='p="'"$hooks"'/watchdog.py"; [ -f "$p" ] && exec python3 "$p" || exit 0'
   fi
   settings="$target/.claude/settings.local.json"
-  if write_claude_settings "$settings" "$hook_cmd" "$guard_cmd" "$edit_guard_cmd" "$token_cmd" "$budget_cmd" "$history_cmd"; then
+  if write_claude_settings "$settings" "$hook_cmd" "$guard_cmd" "$edit_guard_cmd" "$token_cmd" "$budget_cmd" "$history_cmd" "$loop_cmd" "$watchdog_cmd"; then
     echo "Configured $settings (the hook that runs the tests before anything is delivered, the PreToolUse guards, and the token usage file); restart Claude Code to load it."
     echo "Optional: set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in that file's env to run the roles as an agent team."
   else

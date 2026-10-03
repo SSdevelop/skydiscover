@@ -11,12 +11,18 @@ It blocks only when all of these hold:
 - the synthesis loop has started (a candidate exists under synthesis/impl/, or a checkpoint);
 - the budget is known: <run>/budget.json ({"iterations": N}, written by `spec.run budget`), else
   the budget row of the decision log ("50 iterations", or Quick / Standard / Thorough);
-- fewer than N checkpoints exist, and the run is not finished (no <slug>.done);
+- fewer than N iterations are finished (a checkpoint, or a round closed with
+  `spec.iterations fail`), and the run is not finished (no <slug>.done);
 - the lead has not asked to pause: `spec.run pause <run> --reason "..."` writes <run>/pause.json,
   which lets exactly one stop through (so the lead can ask the user something) and is then kept as
   pause.<time>.json, never deleted;
+- no helper (subagent) is still working: waiting for one is legitimate, and Claude Code wakes the
+  lead when it finishes (run_state.py: written in the last few minutes, or mid tool call);
 - the lead has not already been refused MAX_BLOCKS times in a row without a new checkpoint, so a
   lead that cannot make progress is never trapped in a loop.
+
+When the run has also stalled (no progress for SKYDISCOVER_STALL_SECS, run_state.py), the refusal
+says so and tells the lead to act on the newest result on disk instead of waiting.
 
 Every decision is appended to <run>/budget_guard.log.jsonl. The payload arrives on stdin; a refusal
 is {"decision": "block", "reason": ...} on stdout. Any error lets the stop through.
@@ -89,6 +95,28 @@ def _log(run: Path, entry: Dict[str, Any]) -> None:
         pass
 
 
+def _run_state():
+    spec = importlib.util.spec_from_file_location(
+        "_skysynth_run_state_bg", Path(__file__).resolve().parent / "run_state.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def stall_message(run: Path, idle_hours: float, done: int, n: int, rs) -> str:
+    return (
+        f"Stalled: nothing has worked on this run for {idle_hours:.1f} hours (no role is running, no "
+        f"file under synthesis/ changed, no iteration finished; {done} of {n} are finished). Stop "
+        "waiting and polling: whatever you are waiting for has already ended. Act on what is on "
+        f"disk now: {rs.last_result(run)}. If the candidate of iteration {done + 1} passed the tests "
+        "and was scored, write its checkpoint (`python3 -m skydiscover.synthesize.spec.checkpoint "
+        f"snapshot {run}`); if it was not, close the iteration (`python3 -m "
+        f"skydiscover.synthesize.spec.iterations fail {run} --reason \"...\"`) and start iteration "
+        f"{done + 2} with the planner. Run every role in the foreground from here on."
+    )
+
+
 def decide(payload: Dict[str, Any]) -> Optional[str]:
     """The reason to refuse this stop, or None to let it through."""
     tu = _tokens()
@@ -119,6 +147,15 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
             pass
         _log(run, {"allowed": "pause", "reason": reason, "checkpoints": done, "budget": n})
         return None
+    rs = _run_state()
+    session = transcript if transcript.is_file() else None
+    helpers = rs.active_helpers(session)
+    if helpers:
+        # Waiting for a role is legitimate: Claude Code wakes the lead when the role finishes.
+        # Refusing here only pushes the lead into polling the disk inside one endless turn.
+        _log(run, {"allowed": "helpers still working", "helpers": helpers, "checkpoints": done, "budget": n})
+        return None
+    idle_hours = rs.stalled(run, session, marks)
     state = _read(run / STATE) or {}
     streak = state.get("blocks", 0) + 1 if state.get("checkpoints") == done else 1
     if streak > MAX_BLOCKS:
@@ -126,9 +163,12 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
         (run / STATE).write_text(json.dumps({"checkpoints": done, "blocks": 0}), encoding="utf-8")
         return None
     (run / STATE).write_text(json.dumps({"checkpoints": done, "blocks": streak}), encoding="utf-8")
-    _log(run, {"blocked": True, "checkpoints": done, "budget": n, "streak": streak})
+    _log(run, {"blocked": True, "checkpoints": done, "budget": n, "streak": streak,
+               **({"stalled_hours": round(idle_hours, 1)} if idle_hours else {})})
+    if idle_hours:
+        return stall_message(run, idle_hours, done, n, rs)
     return (
-        f"Iteration budget: {done} of {n} iterations have a checkpoint. Do not end your turn: the run "
+        f"Iteration budget: {done} of {n} iterations are finished. Do not end your turn: the run "
         f"is not finished. Continue with iteration {done + 1} now (planner if a design decision is "
         "due, then coding agent, evaluator in performance mode with its checkpoint, auditor, critic), "
         "and block on each role until it reports instead of waiting. If you truly need the user's "

@@ -53,7 +53,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .paths import Domain, Run, files_under, near_run
+from . import iterations
+from .paths import Domain, Run, near_run
 
 MANIFEST = "manifest.json"
 _SKIP_DIRS = {"__pycache__", ".pytest_cache"}
@@ -128,43 +129,10 @@ def _lock(archive: Path):
 # ------------------------------------------------------------------------------------ iterations
 
 
-def published_output(run_dir: Path) -> Optional[Path]:
-    """The run's output folder, from `<run>/.output` (checkpoint.published_output, without the
-    import cycle)."""
-    run = Run(run_dir)
-    try:
-        raw = run.output_pointer.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if not raw:
-        return None
-    target = Path(raw)
-    if not target.is_absolute():
-        target = run.path.resolve().parent.parent / raw
-    return target if target.is_dir() else None
-
-
-def checkpoints(run_dir: Path) -> List[Tuple[int, Path]]:
-    """(K, checkpoint_K/) for every checkpoint written, in order."""
-    out = published_output(run_dir)
-    if out is None or not (out / "checkpoints").is_dir():
-        return []
-    found = []
-    for p in (out / "checkpoints").iterdir():
-        m = re.fullmatch(r"checkpoint_(\d+)", p.name)
-        if m and p.is_dir():
-            found.append((int(m.group(1)), p))
-    return sorted(found)
-
-
 def current_iteration(run_dir: Path) -> int:
-    """0 while the specification is being written (no candidate yet); K+1 once checkpoint_K exists,
-    the iteration now in progress."""
-    done = len(checkpoints(run_dir))
-    if done:
-        return done + 1
-    impl = Run(run_dir).impl
-    return 1 if impl.is_dir() and files_under(impl) else 0
+    """0 while the specification is being written; otherwise the iteration in progress
+    (spec/iterations.py)."""
+    return iterations.current(run_dir)
 
 
 # ------------------------------------------------------------------------------------ the archive
@@ -342,13 +310,18 @@ def _iteration_table(run: Run, archive: Path, index: Dict[str, Any]) -> Dict[str
         r["snapshots"].append(snap["snapshot"])
         r["first_at"] = r["first_at"] or snap.get("created_at")
         r["last_at"] = snap.get("created_at")
-    for k, cp in checkpoints(run.path):
-        r = row(k)
-        score = _read_json(cp / "score.json", {})
-        r["checkpoint"] = cp.name
-        r["score"] = score.get("score")
-        r["became_best"] = score.get("became_best")
-        r["checkpoint_at"] = score.get("created_at")
+    out = iterations.published_output(run.path)
+    for done in iterations.finished(run.path):
+        r = row(done["n"])
+        r["outcome"] = done.get("outcome")
+        r["ended_at"] = done.get("at")
+        if done.get("reason"):
+            r["reason"] = done["reason"]
+        if done.get("checkpoint") and out is not None:
+            score = _read_json(out / "checkpoints" / done["checkpoint"] / "score.json", {})
+            r["checkpoint"] = done["checkpoint"]
+            r["score"] = score.get("score")
+            r["became_best"] = score.get("became_best")
     usage = _read_json(run.token_usage, {})
     for k, tokens in ((usage or {}).get("by_iteration") or {}).items():
         row(k)["tokens"] = tokens
@@ -375,8 +348,9 @@ def _iterations_md(index: Dict[str, Any]) -> str:
         )
         score = ", ".join(f"{m} {v}" for m, v in (r.get("score") or {}).items())
         best = " (best)" if r.get("became_best") else ""
+        ended = r.get("checkpoint") or ("failed: " + str(r.get("reason") or "")[:60] if r.get("outcome") == "failed" else "-")
         lines.append(
-            f"| {k} | {r.get('checkpoint') or '-'}{best} | {score or '-'} | "
+            f"| {k} | {ended}{best} | {score or '-'} | "
             f"{tokens.get('total_tokens', 0):,} | {roles or '-'} | {len(r.get('snapshots', []))} |"
         )
     lines += ["", "## Snapshots", "", "| snapshot | iteration | trigger | detail | time |", "|---|---|---|---|---|"]

@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from . import iterations
 from .archive import try_snapshot
 from .paths import Run, outputs, project_of, test_files
 from .render import render_spec
@@ -755,10 +756,11 @@ def snapshot_run(
     # logs, and token usage file as they stood, which the next iteration overwrites. Stderr, so the
     # checkpoint path stays the only thing on stdout.
     detail = f"{checkpoint.name} {json.dumps(score.get('score'))}"
+    finished = iterations.close(run_dir, "checkpoint", checkpoint=checkpoint.name)
     lines = try_snapshot(
         run_dir,
         checkpoint.name,
-        iteration=int(checkpoint.name.removeprefix("checkpoint_")),  # iteration K ends in checkpoint_K
+        iteration=finished,
         trigger="checkpoint",
         detail=detail + (" (became best)" if became_best else ""),
     )
