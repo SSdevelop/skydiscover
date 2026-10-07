@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .paths import TEST_SCRIPT, Domain, Run, near_run, test_files, test_id
+from .paths import TEST_SCRIPT, Domain, Run, helper_files, near_run, test_files, test_id
 
 # A header line shorter than this, or a single word, is a tag or a file name, not a property statement.
 MIN_STATEMENT_LEN = 12
@@ -206,7 +206,7 @@ def _property_from_header(cc: Path) -> str:
 
 @near_run
 def sync(run_dir: Path, domain: str, *, refresh_bodies: bool = False) -> Dict[str, Any]:
-    """Copy every test in the run's suite, its test.sh, and its helper subdirectories into the
+    """Copy every test in the run's suite, its test.sh, its `_` helper files, and its helper subdirectories into the
     domain's tests/ and record each test, deduped by id. An unchanged test is skipped. A test whose
     BODY changed is held back unless refresh_bodies is passed: the kept copy is what earlier runs
     validated, and silently replacing it would hand a weakened test to every later run in the
@@ -221,6 +221,8 @@ def sync(run_dir: Path, domain: str, *, refresh_bodies: bool = False) -> Dict[st
     if ccs and script.is_file():
         dest.mkdir(parents=True, exist_ok=True)
         _copy_keeping_old(script, dest / TEST_SCRIPT, history / TEST_SCRIPT)
+        for helper in helper_files(suite):  # `_`-prefixed helpers travel with the tests that use them
+            _copy_keeping_old(helper, dest / helper.name, history / helper.name)
         for sub in suite.iterdir():
             if sub.is_dir() and not sub.name.startswith(".") and sub.name != "__pycache__":
                 for f in sorted(sub.rglob("*")):

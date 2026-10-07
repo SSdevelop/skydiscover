@@ -82,6 +82,11 @@
             "type": "command",
             "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/watchdog.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "p=\"${CLAUDE_PLUGIN_ROOT}/hooks/process_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\" || exit 0",
+            "timeout": 30
           }
         ]
       },

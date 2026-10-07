@@ -334,8 +334,15 @@ def _run_one(checkpoint: Path, entry: Path, suite: Path, name: str) -> Optional[
     return proc.returncode
 
 
+def _test_workers() -> int:
+    try:
+        return int(os.environ.get("SKYDISCOVER_TEST_WORKERS", "") or 8)
+    except ValueError:
+        return 8
+
+
 def _failing_tests(checkpoint: Path, run_dir: Path) -> Optional[List[str]]:
-    """The current tests a checkpoint fails, every test run once, all at the same time. [] means
+    """The current tests a checkpoint fails, every test run once, at most _test_workers() at a time. [] means
     it passes. None means no verdict (no suite, or a test that could not run), so the caller
     keeps its selection."""
     suite = Run(run_dir).tests
@@ -343,7 +350,10 @@ def _failing_tests(checkpoint: Path, run_dir: Path) -> Optional[List[str]]:
     names = [p.name for p in test_files(suite)] if (suite / TEST_SCRIPT).is_file() else []
     if not names or entry is None:
         return None
-    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+    # Tests that start their own servers or claim hardware resources fail when too many run at
+    # once (an RDMA NIC refuses connections well before 29 at a time), so at most TEST_WORKERS
+    # run together; SKYDISCOVER_TEST_WORKERS sets it.
+    with ThreadPoolExecutor(max_workers=max(1, min(len(names), _test_workers()))) as pool:
         codes = list(pool.map(lambda n: _run_one(checkpoint, entry, suite, n), names))
     if any(code not in (0, 1) for code in codes):
         return None

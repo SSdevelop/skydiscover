@@ -17,7 +17,8 @@ It blocks only when all of these hold:
   which lets exactly one stop through (so the lead can ask the user something) and is then kept as
   pause.<time>.json, never deleted;
 - no helper (subagent) is still working: waiting for one is legitimate, and Claude Code wakes the
-  lead when it finishes (run_state.py: written in the last few minutes, or mid tool call);
+  lead when it finishes (run_state.py: a helper works until its last turn is a final answer; one
+  that has just finished does not count);
 - the lead has not already been refused MAX_BLOCKS times in a row without a new checkpoint, so a
   lead that cannot make progress is never trapped in a loop.
 

@@ -1,17 +1,18 @@
 """What the guards need to know about a running loop: are helpers still working, and when did the
 run last make progress. Stdlib only, shared by budget_guard.py and watchdog.py.
 
-- A helper (subagent) is **active** when its transcript was written in the last ACTIVE_SECS, or
-  when it is in the middle of a tool call (its last turn asked for a tool, or a tool result
-  arrived and it has not answered): a role running a multi-hour benchmark writes nothing until the
-  benchmark ends, so recency alone would miss it. A helper silent for longer than STALL_SECS is not
-  active, whatever its last turn says.
+- A helper (subagent) is **active** until it has finished: its transcript's last turn is a final
+  answer (`stop_reason: end_turn`). Mid tool call (a role running a multi-hour benchmark writes
+  nothing until the benchmark ends) or not yet answered (just launched), it is active. How
+  recently it wrote does not count: a role that finished a minute ago is done, and treating it as
+  busy would let the lead end its turn right after every role. A helper silent for longer than
+  STALL_SECS is not active, whatever its last turn says.
 - **Progress** is the newest of: a subagent transcript write, a file written under synthesis/
   (code, tests, bench logs, leaderboard), and a finished iteration. The run is **stalled** when
   none of these happened for STALL_SECS while the loop is under way and the run is not done.
 
-SKYDISCOVER_ACTIVE_SECS (default 300) and SKYDISCOVER_STALL_SECS (default 14400, four hours: the
-longest one evaluation may take before it counts as a bug) tune both.
+SKYDISCOVER_STALL_SECS (default 14400, four hours: the longest one evaluation may take before it
+counts as a bug) tunes both.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-ACTIVE_SECS = int(os.environ.get("SKYDISCOVER_ACTIVE_SECS", "300") or "300")
 STALL_SECS = int(os.environ.get("SKYDISCOVER_STALL_SECS", "14400") or "14400")
 
 
@@ -54,8 +54,9 @@ def _tail_lines(path: Path, size: int = 262144) -> List[str]:
         return []
 
 
-def mid_tool_call(path: Path) -> bool:
-    """True when the helper's last turn asked for a tool, or a tool result has not been answered."""
+def finished(path: Path) -> bool:
+    """True when the helper's last turn is a final answer; False when it is mid tool call (its last
+    turn asked for a tool, or a tool result has not been answered) or has not answered yet."""
     for line in reversed(_tail_lines(path)):
         try:
             row = json.loads(line)
@@ -68,16 +69,16 @@ def mid_tool_call(path: Path) -> bool:
         blocks = content if isinstance(content, list) else []
         if row.get("type") == "user":
             if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
-                return True
+                return False
             continue
         if row.get("type") == "assistant":
             reason = msg.get("stop_reason")
             if reason == "end_turn":
-                return False
+                return True
             if reason == "tool_use" or any(
                 isinstance(b, dict) and b.get("type") == "tool_use" for b in blocks
             ):
-                return True
+                return False
     return False
 
 
@@ -90,7 +91,7 @@ def active_helpers(transcript: Optional[Path], now: Optional[float] = None) -> L
             age = now - path.stat().st_mtime
         except OSError:
             continue
-        if age < ACTIVE_SECS or (age < STALL_SECS and mid_tool_call(path)):
+        if age < STALL_SECS and not finished(path):
             active.append(path.stem)
     return active
 

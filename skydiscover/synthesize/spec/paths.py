@@ -43,13 +43,27 @@ def files_under(root: Path) -> List[Path]:
 
 # A suite is a directory with a test.sh at its top (workflow/scripts/suite.py runs it). Every other
 # regular file in the directory is a test, in whatever language test.sh knows how to run; a test's
-# id is its file name without the extension.
+# id is its file name without the extension. Files whose name starts with `_` (a shared header, a
+# simulator, a workload generator) and everything in a subdirectory are helpers the tests use, not
+# tests.
 TEST_SCRIPT = "test.sh"
+HELPER_PREFIX = "_"
 
 
 def is_test_file(path: Path) -> bool:
     path = Path(path)
-    return path.is_file() and path.name != TEST_SCRIPT and not path.name.startswith(".")
+    return (
+        path.is_file()
+        and path.name != TEST_SCRIPT
+        and not path.name.startswith((".", HELPER_PREFIX))
+    )
+
+
+def helper_files(suite: Path) -> List[Path]:
+    """The `_`-prefixed helper files at the top of a suite directory, in name order."""
+    return sorted(
+        (p for p in Path(suite).glob(f"{HELPER_PREFIX}*") if p.is_file()), key=lambda p: p.name
+    )
 
 
 def test_files(suite: Path) -> List[Path]:

@@ -209,6 +209,10 @@ Nothing a run produced is deleted:
 
 ### Guards
 
+- `hooks/process_guard.py` (PreToolUse on Bash): agents may stop only processes this session
+  started. `pkill`, `killall`, and `kill` fed by `pgrep`/`pidof` are refused, and so is
+  `kill <pid>` for a pid outside the session (a shared server, another user's job).
+
 - `hooks/loop_guard.py` (PreToolUse on Task/Agent): an iteration gets at most
   `max_coding_attempts` coding-agent launches (`budget.json`, default 5); at the cap the round is
   closed with `spec.iterations fail` and counts toward the budget. The auditor runs during the loop

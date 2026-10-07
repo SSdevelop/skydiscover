@@ -1,7 +1,8 @@
 """A lead waiting on roles is allowed to wait; a lead polling a stalled run is told to act.
 
-- run_state: a role is working when its transcript is recent or it is mid tool call (a long
-  benchmark writes nothing until it ends); a run is stalled when nothing progressed for hours;
+- run_state: a role is working until its last turn is a final answer (mid tool call it may write
+  nothing for hours); a role that just finished is done; a run is stalled when nothing progressed
+  for hours;
 - budget_guard lets the lead end its turn while a role works, and names a stall when refusing;
 - watchdog refuses one Bash call (then lets the next through) when the loop has stalled.
 """
@@ -77,9 +78,9 @@ def _setup(tmp_path: Path, helper_last: str, helper_age: float, files_age: float
     return run, main, payload
 
 
-def test_a_role_is_working_when_recent_or_mid_tool_call(tmp_path, run_state):
+def test_a_role_is_working_until_it_finishes(tmp_path, run_state):
     for last, age, working in [
-        (ENDED, 60, True),                  # wrote a minute ago
+        (ENDED, 60, False),                 # finished a minute ago: done, not busy
         (WAITING_ON_TOOL, 2 * HOUR, True),  # in a long benchmark: silent but not done
         (TOOL_RESULT, 2 * HOUR, True),
         (ENDED, 2 * HOUR, False),           # finished two hours ago
@@ -95,6 +96,15 @@ def test_the_budget_guard_lets_the_lead_wait_for_a_working_role(tmp_path, budget
     assert budget_guard.decide(payload) is None
     log = [json.loads(x) for x in (run.path / "budget_guard.log.jsonl").read_text().splitlines()]
     assert log[-1]["allowed"] == "helpers still working"
+
+
+def test_a_role_that_just_finished_does_not_let_the_lead_stop(tmp_path, budget_guard, monkeypatch):
+    """Iteration 18 of the rdma-bptree run: the evaluator finished, the lead reported, said it would
+    open iteration 19, and ended its turn minutes later. That stop must be refused."""
+    monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
+    _, _, payload = _setup(tmp_path, ENDED, 120, 120)
+    reason = budget_guard.decide(payload)
+    assert reason and "0 of 10" in reason
 
 
 def test_the_budget_guard_names_a_stall(tmp_path, budget_guard, monkeypatch):
