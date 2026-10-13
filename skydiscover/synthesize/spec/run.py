@@ -807,8 +807,11 @@ def export_deliverable(run_dir: Path, dest: Path, *, production_ready=False) -> 
     revalidation: List[str] = []
     if verdicts.get(_number(selected)) != []:
         passing = [cp for cp in artifact_store.best_lineage(out) if verdicts.get(_number(cp)) == []]
-        original = artifact_store.read_record(selected)
         objective = next(iter(artifact_store.read_score(selected).get("score", {})), None)
+        # The failed best is out of the running, so its configuration does not bind: the passing
+        # checkpoints only have to be comparable with one another (a defect fix that also changed
+        # the measurement protocol must not leave nothing publishable).
+        original = artifact_store.read_record(passing[0]) if passing else artifact_store.read_record(selected)
         comparable = []
         for candidate in passing:
             record = artifact_store.read_record(candidate)

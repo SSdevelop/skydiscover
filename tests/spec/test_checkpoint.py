@@ -398,6 +398,13 @@ def test_postflight_preserves_an_earlier_best_checkpoint(tmp_path):
 
 needs_gpp = pytest.mark.skipif(shutil.which("g++") is None, reason="g++ not available")
 
+
+def _set_config(run: Run, config: dict) -> None:
+    rows = json.loads(run.leaderboard.read_text())
+    for row in rows:
+        row["config"] = config
+    run.leaderboard.write_text(json.dumps(rows))
+
 _COUNT_H = "int count();\n"
 _TEST_SH = """#!/usr/bin/env bash
 cd "$(dirname "$0")"
@@ -466,6 +473,32 @@ def test_export_demotes_a_best_that_a_later_gate_invalidates(tmp_path):
     assert "## Checkpoints" in page
     assert "| 1 | 1 | 1 | **best** |" in page
     assert "| 2 | 1 | 1 | fails `check_floor.cc` |" in page
+
+
+@needs_gpp
+def test_export_falls_back_even_when_the_failed_best_was_measured_differently(tmp_path):
+    """rdma-bptree: the best (checkpoint 5) was measured under a 4 GB memory limit, then a defect
+    fix moved the protocol to 16 GB. The fixed checkpoint passed every test, but finish refused
+    with "incomparable scores" because it compared it with the failed best. The failed best does
+    not bind: the passing checkpoints only need to be comparable with each other."""
+    run = _write_compilable_run(tmp_path, _GOOD)
+    (run.tests / "check_positive.cc").write_text(_CHECK_POSITIVE, encoding="utf-8")
+    _set_config(run, {"ulimit_gb": 16})
+    _snapshot(run.path, tmp_path, became_best=True)  # checkpoint_1, passes
+
+    (run.impl / "counter.cc").write_text(_FAST_BROKEN, encoding="utf-8")
+    _set_config(run, {"ulimit_gb": 4})
+    _snapshot(run.path, tmp_path, became_best=True)  # checkpoint_2, measured differently, fails later
+
+    (run.tests / "check_floor.cc").write_text(_CHECK_FLOOR, encoding="utf-8")
+    (run.impl / "counter.cc").write_text(_GOOD)
+    _set_config(run, {"ulimit_gb": 16})
+    _record_measurement(run.path)
+    lines = spec_run.export_deliverable(run.path, tmp_path)
+
+    out = artifacts.output_for_run(run.path, tmp_path)
+    assert json.loads((out / "best" / "score.json").read_text(encoding="utf-8"))["checkpoint"] == 1
+    assert any("fails the current test suite" in line and "checkpoint_2" in line for line in lines)
 
 
 def test_the_re_test_runs_each_test_by_name_and_reports_the_failing_ones(tmp_path):

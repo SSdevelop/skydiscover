@@ -440,7 +440,17 @@ def _runs_root(cwd: Path) -> Path:
         except OSError:
             raw = None
     root = Path(raw or ".skydiscover").expanduser()
-    return root if root.is_absolute() else cwd / root
+    if root.is_absolute():
+        return root
+    # The lead's shell may have cd'ed below the project (into a run's bench folder, say); the runs
+    # folder is then in an ancestor. Never the home directory's, as in spec/paths.py project_root().
+    here, user_home = cwd.resolve(), Path.home().resolve()
+    for d in (here, *here.parents):
+        if d == user_home:
+            break
+        if (d / root).is_dir():
+            return d / root
+    return cwd / root
 
 
 def find_run(cwd: Path, transcript: Optional[Path]) -> Optional[Path]:

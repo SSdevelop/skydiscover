@@ -107,6 +107,17 @@ def test_a_role_that_just_finished_does_not_let_the_lead_stop(tmp_path, budget_g
     assert reason and "0 of 10" in reason
 
 
+def test_the_guards_find_the_run_from_a_folder_below_the_project(tmp_path, budget_guard, monkeypatch):
+    """The rdma-bptree lead cd'ed into synthesis/bench/runs; from then on every hook looked for
+    <that folder>/.skydiscover, found no run, and did nothing (no snapshots, no guards)."""
+    monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
+    run, _, payload = _setup(tmp_path, ENDED, 120, 120)
+    deep = run.bench / "runs"
+    deep.mkdir(parents=True, exist_ok=True)
+    reason = budget_guard.decide({**payload, "cwd": str(deep)})
+    assert reason and "0 of 10" in reason
+
+
 def test_the_budget_guard_names_a_stall(tmp_path, budget_guard, monkeypatch):
     monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
     _, _, payload = _setup(tmp_path, ENDED, 29 * HOUR, 29 * HOUR)
