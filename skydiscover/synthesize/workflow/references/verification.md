@@ -3,6 +3,24 @@
 How the Evaluator decides. Correctness is a prerequisite for scoring: a model's opinion, a code
 review, or a benchmark number never substitutes for an executable check.
 
+## Auditor proof evidence
+
+The auditor starts `spec.proof start <run>` to select its backend and freeze the specification and
+implementation. Rust with `audit_mode: proof` uses Verus; C++ uses tests regardless of the request.
+The evaluator's tests and measurements remain in the outer loop. Missing proof prerequisites
+cannot be replaced with test results.
+
+The proof worker writes insertion-only overlays. Successful verification must cover every frozen
+obligation and the entire generated target, use the pinned toolchain, and preserve executable
+tokens. The auditor reviews the fixed requirement mapping and assumptions; new requirements go
+through spec resolution. No proof result can claim more than its contract.
+
+`stamp-audit` replays accepted proof evidence and binds it to the session. Release checks replay
+it again on relocated inputs. Unresolved obligations block a verified result without being labeled
+confirmed defects. A defect can reference `--proof-obligation <id>` instead of test-and-mutant
+evidence only when the obligation is in the current replayed proof. Test-mode closures retain
+their test-and-mutant requirements.
+
 ## The Test Suite
 
 The suite is the directory `<run>/synthesis/tests/`. It holds one file per test, in any language,

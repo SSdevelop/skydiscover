@@ -27,8 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import suite  # noqa: E402  (also puts spec/ on sys.path)
 
 # isort: split
+from spec import proof  # noqa: E402
 from spec.checkpoint import audit_covers  # noqa: E402
 from spec.findings import Findings, snapshot_path  # noqa: E402
+from spec.paths import Run  # noqa: E402
 
 
 def _err(msg: str) -> int:
@@ -134,7 +136,32 @@ def defects(log: Path, tests: Path, impl: Path, interface: Optional[Path] = None
     # A fix is proven by its test: it must pass the built implementation and fail the recorded
     # mutant, so an always-green test cannot be cited for any defect.
     unproven: List[str] = []
+    proof_evidence = None
     for f in fixed:
+        if f.proof_obligation:
+            try:
+                if proof_evidence is None:
+                    accepted = proof.replay(log.parent)
+                    from spec.checkpoint import _is_published_form, _tree_digest
+
+                    run = Run(log.parent)
+                    candidates = (
+                        [impl] if impl.is_dir() else [impl.parent, *list(impl.parents)[1:4]]
+                    )
+                    if not impl.resolve().is_relative_to(run.impl.resolve()) and not any(
+                        _is_published_form(candidate, run, _tree_digest(run.impl))
+                        for candidate in candidates
+                    ):
+                        raise ValueError("proof does not cover the implementation being checked")
+                    proof_evidence = accepted
+                if (
+                    proof_evidence["mode"] != "proof"
+                    or f.proof_obligation not in proof_evidence["obligations"]
+                ):
+                    raise ValueError("recorded obligation is not in the verified contract")
+            except (ValueError, OSError) as exc:
+                unproven.append(f"{f.id}: proof-based fix is not established: {exc}")
+            continue
         test = (f.test or "").strip()
         if not test:
             unproven.append(f"{f.id}: no test recorded for the fix")
@@ -171,7 +198,7 @@ def defects(log: Path, tests: Path, impl: Path, interface: Optional[Path] = None
         )
         return 2
     print(
-        f"DEFECTS PASSED: {len(fixed)} fixed defect(s), each test passes the build and catches its mutant."
+        f"DEFECTS PASSED: {len(fixed)} fixed defect(s), each backed by test-and-mutant or replayed proof evidence."
     )
     return 0
 
@@ -190,5 +217,11 @@ def audit(artifact: Path, audit_dir: Path) -> int:
     why = audit_covers(stamp, artifact, audit_dir.parent.parent)
     if why:
         return _err(f"audit stamp {why}; run the auditor on this candidate and stamp it")
+    run = Run(audit_dir.parent.parent)
+    if run.audit_session.exists():
+        try:
+            proof.replay(run.path)
+        except (ValueError, OSError) as exc:
+            return _err(f"frozen audit replay failed: {exc}")
     print("AUDIT PASSED: the auditor covered the delivered implementation.")
     return 0

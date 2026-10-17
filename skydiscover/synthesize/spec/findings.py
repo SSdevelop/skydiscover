@@ -70,6 +70,7 @@ class Finding:
     # implementation that test catches (check_release.py), so an unrelated test cannot be cited.
     test: str = ""  # test file that shows this defect's fix
     mutant: str = ""  # broken implementation that exhibits this defect
+    proof_obligation: str = ""  # fixed Verus obligation that establishes this defect's repair
     source: str = ""  # "question" for a row answering questions.json; else the role that added it
 
     question_context: str = ""  # matching question and project; older records need confirmation
@@ -194,6 +195,7 @@ class Findings:
         who: str = "",
         test: str = "",
         mutant: str = "",
+        proof_obligation: str = "",
     ) -> bool:
         """Update a finding's status (and, if given, who decided it, and the test and mutant that
         prove a fix). The same rule is re-applied, so set_status can never confirm a non-human
@@ -215,6 +217,10 @@ class Findings:
                         f.test = test
                     if mutant:
                         f.mutant = mutant
+                    if proof_obligation:
+                        if f.proof_obligation and f.proof_obligation != proof_obligation:
+                            raise ValueError("cannot replace a finding's recorded proof obligation")
+                        f.proof_obligation = proof_obligation
                     if who:
                         f.answered_by = who
                         f.asked = True
@@ -323,6 +329,7 @@ def _cmd_add(args: argparse.Namespace) -> int:
         severity=args.severity,
         test=args.test,
         mutant=args.mutant,
+        proof_obligation=args.proof_obligation,
         source=args.source,
     )
     from .paths import resolve_decision_log
@@ -337,7 +344,13 @@ def _cmd_set_status(args: argparse.Namespace) -> int:
     from .paths import resolve_decision_log
 
     ok = Findings(str(resolve_decision_log(args.run)), track_severity=True).set_status(
-        args.id, args.status, note=args.note, who=args.who, test=args.test, mutant=args.mutant
+        args.id,
+        args.status,
+        note=args.note,
+        who=args.who,
+        test=args.test,
+        mutant=args.mutant,
+        proof_obligation=args.proof_obligation,
     )
     print("ok" if ok else "not found")
     return 0 if ok else 1
@@ -379,6 +392,9 @@ def main(argv: list[str] | None = None) -> int:
         help="the role adding the row (spec-builder, evaluator, auditor, ...)",
     )
     a.add_argument("--id", default="", help="override the content-hash id")
+    a.add_argument(
+        "--proof-obligation", default="", help="Verus obligation id linked to the defect"
+    )
     a.set_defaults(fn=_cmd_add)
 
     s = sub.add_parser("set-status", help="move a finding to one of the known statuses")
@@ -396,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         "--mutant", default="", help="to close a fixed defect: the broken copy that test catches"
     )
     s.set_defaults(fn=_cmd_set_status)
+    s.add_argument("--proof-obligation", default="", help="Verus obligation proving this repair")
 
     args = ap.parse_args(argv)
     return args.fn(args)

@@ -653,6 +653,15 @@ def audit_covers(stamp: Path, artifact: Path, run_dir: Optional[Path] = None) ->
         return f"{stamp} was written for different implementation bytes"
     if data.get("input_digests") != input_digests(run.path, audit=True):
         return "the audit does not cover the current requirements, tests, evaluator and decisions"
+    from . import proof
+    from .paths import front_matter
+
+    if run.audit_session.exists() or "audit_mode" in front_matter(run.task):
+        try:
+            if data.get("audit_evidence") != proof.evidence(run.path):
+                return "the audit stamp does not match the frozen audit session"
+        except (ValueError, OSError) as exc:
+            return f"audit session is not accepted: {exc}"
     return None
 
 
@@ -676,6 +685,14 @@ def stamp_audit(run_dir: Path, findings: list[str]) -> Path:
     run = Run(run_dir)
     if not run.impl.is_dir():
         raise FileNotFoundError(f"no candidate at {run.impl}")
+    from . import proof
+    from .paths import front_matter
+
+    audit_evidence = None
+    if run.audit_session.exists() or "audit_mode" in front_matter(run.task):
+        # Legacy runs retain their old stamp format. New audit-mode runs must have a frozen
+        # session; proof mode replays Verus rather than trusting an agent-authored result file.
+        audit_evidence = proof.replay(run.path)
     run.audit.mkdir(parents=True, exist_ok=True)
     doc = {
         "candidate": run.impl.relative_to(run.path).as_posix(),
@@ -683,7 +700,10 @@ def stamp_audit(run_dir: Path, findings: list[str]) -> Path:
         "input_digests": input_digests(run_dir, audit=True),
         "timestamp": int(datetime.now(timezone.utc).timestamp()),
         "findings": list(findings),
+        "finished_iterations": len(iterations.finished(run.path)),
     }
+    if audit_evidence is not None:
+        doc["audit_evidence"] = audit_evidence
     run.completeness.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     return run.completeness
 
@@ -697,7 +717,7 @@ def audit_staleness_notice(run_dir: Path) -> str:
     if why:
         return (
             f"checkpoint: new best not covered by the audit ({why}). "
-            "Run the auditor before the next iteration; the delivery check requires it."
+            "The loop guard schedules audits; the delivery check requires a current final audit."
         )
     return ""
 

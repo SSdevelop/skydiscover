@@ -1,5 +1,5 @@
 {
-  "description": "skysynth correctness tests (Codex plugin wiring; scripts live in the plugin root's hooks/ directory, shared with every other install channel)",
+  "description": "skysynth correctness tests and loop guard (Codex plugin wiring; scripts live in the plugin root's hooks/ directory, shared with every other install channel)",
   "hooks": {
     "SubagentStop": [
       {
@@ -14,6 +14,16 @@
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": "Task|Agent|spawn_agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/hooks/loop_guard.py\"; [ -f \"$p\" ] && exec python3 \"$p\"; exit 0",
+            "timeout": 30
+          }
+        ]
+      },
       {
         "matcher": "Bash",
         "hooks": [

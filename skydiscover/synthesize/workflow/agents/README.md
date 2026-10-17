@@ -15,6 +15,8 @@ agents/
     ├── isa.md              Coding Agent, proof-driven: a new design when the DSA stalls
     ├── evaluator.md        Evaluator: the tests and the benchmark
     ├── auditor.md          Auditor: turns every reward hack into a test; reviews the final candidate
+    ├── proof-planner.md    Auditor's inner loop: plans proofs against frozen inputs
+    ├── proof-coder.md      Auditor's inner loop: writes proof overlays and invokes Verus
     └── critic.md           Critic: guidance for the next iteration
 ```
 

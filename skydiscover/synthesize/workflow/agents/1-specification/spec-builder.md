@@ -31,6 +31,15 @@ section and the shared Goal and Inputs, and leave the other modes' files alone.
 
 ## Goal
 
+In requirements mode, preserve the requested `audit_mode: test | proof` in task.md (default test)
+and identify `audit_target` relative to `synthesis/impl/`. For a Rust proof request, prepare the
+Verus specification and `specification/verus.json`: stable obligation IDs, executable function
+names, and requires/ensures clauses reflecting the approved requirements. Follow
+`skydiscover/synthesize/examples/verus-audit/README.md` for the schema and supported source scope.
+Do not invent preconditions to make an implementation provable. C++ remains test-audited.
+Audits freeze these files; later spec changes require a versioned request through the lead and
+a new audit session. Proof workers cannot change this contract.
+
 Ground the design space in real systems, then say what the system must do, what it will face, and
 what the environment allows. What it must do comes from the reference systems and the user's
 answers, every property tracing to a `file:line` in a system fetched during this run. What it will

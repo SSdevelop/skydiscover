@@ -121,6 +121,13 @@ def main(argv=None) -> int:
         interface = Path(args.interface) if args.interface else None
 
     rc = run_suite(tests, impl, interface, args.test)
+    if not rc and run is not None and args.check_defects and not args.production_ready:
+        # run finish uses --check-defects even without a production-ready claim. Proof-required
+        # exports must still replay the proof on the relocated artifact.
+        from spec.paths import front_matter
+
+        if run.audit_session.exists() or "audit_mode" in front_matter(run.task):
+            rc = check_release.audit(_audited(run, args.impl), run.audit)
     if not rc and run is not None and args.check_defects:
         rc = _defects(run, tests, impl, interface)
     if rc or not args.production_ready:

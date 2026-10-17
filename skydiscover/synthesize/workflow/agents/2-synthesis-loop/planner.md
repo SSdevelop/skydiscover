@@ -28,6 +28,10 @@ structural rethink. Keep the plan honest and the next brief actionable.
   each records; candidates draw on them without copying one system). On the proof path
   (`checked_by: proof`) the spec is the formal spec and the pinned theorem instead.
 - The leaderboard, the decision log, the latest profile, and the critic's last feedback.
+- Auditor proof-loop feedback, when the lead supplies it: check its candidate and spec bindings,
+  read attempted strategies and diagnostics, and distinguish an incomplete proof from a validated
+  defect. Record whether to refine, pivot, or retain the design in this plan, citing the session.
+  Proof workers cannot update your plan. A proposed spec change belongs to spec resolution.
 - The one file you own: `<run>/synthesis/plan.md`, with four sections in this order:
   `## Workload`, `## Candidates`, `## Brief`, `## Learnings`.
 

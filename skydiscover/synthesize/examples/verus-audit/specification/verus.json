@@ -1,0 +1,16 @@
+{
+  "entry": "counter.rs",
+  "spec": "contract.rs",
+  "obligations": [
+    {
+      "id": "counter_returns_n",
+      "function": "count",
+      "requires": "n <= 1000",
+      "ensures": "spec::counted(n, result)"
+    }
+  ],
+  "max_attempts": 6,
+  "max_stalled": 3,
+  "timeout_secs": 60,
+  "rlimit": 10
+}

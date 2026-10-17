@@ -440,7 +440,9 @@ def _token_lines(run: Run) -> List[str]:
     doc = artifact_store._read_json(run.token_usage, {})
     total = doc.get("total") if isinstance(doc, dict) else None
     if not isinstance(total, dict) or not total.get("total_tokens"):
-        return ["  tokens: no token_usage.json in the run dir (hooks/token_usage.py records one per session)"]
+        return [
+            "  tokens: no token_usage.json in the run dir (hooks/token_usage.py records one per session)"
+        ]
     sessions = len(doc.get("sessions") or {})
     return [
         f"  tokens: {total['total_tokens']:,} total over {sessions} session(s): "
@@ -646,6 +648,12 @@ def _verify_export(best: Path, run: Run, *, production_ready=False) -> None:
             artifact_store._tree_digest(source, ignored=("sources", "profiling"))
             target.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
+                if target == bundle.audit and target.exists():
+                    # A repeated export refreshes its private copy of read-only audit snapshots.
+                    # The source session stays frozen; copytree restores its permissions below.
+                    for copied_input in target.rglob("*"):
+                        if not copied_input.is_symlink():
+                            copied_input.chmod(0o755 if copied_input.is_dir() else 0o644)
                 shutil.copytree(
                     source,
                     target,
@@ -811,7 +819,11 @@ def export_deliverable(run_dir: Path, dest: Path, *, production_ready=False) -> 
         # The failed best is out of the running, so its configuration does not bind: the passing
         # checkpoints only have to be comparable with one another (a defect fix that also changed
         # the measurement protocol must not leave nothing publishable).
-        original = artifact_store.read_record(passing[0]) if passing else artifact_store.read_record(selected)
+        original = (
+            artifact_store.read_record(passing[0])
+            if passing
+            else artifact_store.read_record(selected)
+        )
         comparable = []
         for candidate in passing:
             record = artifact_store.read_record(candidate)
@@ -1072,7 +1084,10 @@ def main_budget(argv: Optional[List[str]] = None) -> int:
         print(f"run budget: {run.path} is not a run directory (no task.md)", file=sys.stderr)
         return 2
     if min(args.iterations, args.attempts, args.audit_every) < 1:
-        print("run budget: iterations, --attempts, and --audit-every are each at least 1", file=sys.stderr)
+        print(
+            "run budget: iterations, --attempts, and --audit-every are each at least 1",
+            file=sys.stderr,
+        )
         return 2
     artifact_store._write_json(
         run.path / "budget.json",

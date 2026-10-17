@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from skydiscover.synthesize.spec import archive, iterations, reuse
+from skydiscover.synthesize.spec import archive, checkpoint, iterations, reuse
 from skydiscover.synthesize.spec import run as spec_run
 from skydiscover.synthesize.spec.paths import Run
 
@@ -85,7 +87,11 @@ def test_a_run_without_a_record_is_read_from_its_checkpoints(tmp_path):
     assert iterations.current(run.path) == 3
     # the first write seeds the record from the checkpoints
     assert iterations.close(run.path, "failed", reason="x") == 3
-    assert [r["checkpoint"] for r in iterations.finished(run.path)] == ["checkpoint_1", "checkpoint_2", None]
+    assert [r["checkpoint"] for r in iterations.finished(run.path)] == [
+        "checkpoint_1",
+        "checkpoint_2",
+        None,
+    ]
 
 
 def test_the_archive_and_the_budget_count_a_failed_iteration(tmp_path, budget_guard):
@@ -105,14 +111,18 @@ def test_the_archive_and_the_budget_count_a_failed_iteration(tmp_path, budget_gu
 def test_coding_attempts_are_capped_per_iteration(tmp_path, loop_guard, monkeypatch):
     monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
     run = _run(tmp_path)
-    assert spec_run.main(["budget", str(run.path), "10", "--attempts", "2", "--audit-every", "3"]) == 0
+    assert (
+        spec_run.main(["budget", str(run.path), "10", "--attempts", "2", "--audit-every", "3"]) == 0
+    )
     coder = _launch(run, subagent_type="skysynth:2-synthesis-loop:coding-agent")
     assert loop_guard.decide(coder) is None
     assert loop_guard.decide(coder) is None
     refused = loop_guard.decide(coder)
     assert refused and "2 coding attempts" in refused and "spec.iterations fail" in refused
     # a coding agent launched as a general-purpose agent with the brief is still counted
-    by_brief = _launch(run, subagent_type="general-purpose", prompt="Read agents/2-synthesis-loop/coding-agent.md")
+    by_brief = _launch(
+        run, subagent_type="general-purpose", prompt="Read agents/2-synthesis-loop/coding-agent.md"
+    )
     assert loop_guard.decide(by_brief)
     # closing the round starts a fresh count
     iterations.close(run.path, "failed", reason="spent")
@@ -121,20 +131,202 @@ def test_coding_attempts_are_capped_per_iteration(tmp_path, loop_guard, monkeypa
     assert loop_guard.decide(_launch(run, subagent_type="Explore")) is None
 
 
-def test_the_auditor_runs_every_n_iterations_and_always_in_phase_3(tmp_path, loop_guard, monkeypatch):
+def test_the_auditor_runs_every_n_iterations_and_always_in_phase_3(
+    tmp_path, loop_guard, monkeypatch
+):
     monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
     run = _run(tmp_path)
     assert spec_run.main(["budget", str(run.path), "10", "--audit-every", "2"]) == 0
-    auditor = _launch(run, subagent_type="skysynth:2-synthesis-loop:auditor", prompt="audit iteration")
+    auditor = _launch(
+        run, subagent_type="skysynth:2-synthesis-loop:auditor", prompt="audit iteration"
+    )
     assert "every 2 iterations" in loop_guard.decide(auditor)  # iteration 1: not due
     for _ in range(2):
         iterations.close(run.path, "failed", reason="x")
     assert loop_guard.decide(auditor) is None  # 2 finished: due
-    assert loop_guard.decide(auditor)  # and not again right away
-    final = _launch(run, subagent_type="skysynth:2-synthesis-loop:auditor", prompt="production lens: security")
+    assert loop_guard.decide(auditor) is None  # a failed/interrupted launch can be retried
+    checkpoint.stamp_audit(run.path, [])
+    assert json.loads(run.completeness.read_text())["finished_iterations"] == 2
+    assert loop_guard.decide(auditor)  # completion, not launch, advances the interval
+    final = _launch(
+        run, subagent_type="skysynth:2-synthesis-loop:auditor", prompt="production lens: security"
+    )
     assert loop_guard.decide(final) is None
     log = [json.loads(x) for x in (run.path / "loop_guard.log.jsonl").read_text().splitlines()]
-    assert [e.get("allowed") or "refused" for e in log] == ["refused", "auditor", "refused", "auditor"]
+    assert [e.get("allowed") or "refused" for e in log] == [
+        "refused",
+        "auditor",
+        "auditor",
+        "refused",
+        "auditor",
+    ]
+
+
+def test_proof_handoff_releases_schedule_without_granting_coverage(
+    tmp_path, loop_guard, monkeypatch
+):
+    from skydiscover.synthesize.spec import proof
+
+    run = _run(tmp_path)
+    monkeypatch.setenv("SKYDISCOVER_RUN", str(run.path))
+    run.task.write_text("---\naudit_mode: proof\naudit_target: target.rs\n---\n")
+    (run.impl / "target.rs").write_text("pub fn f() {}\n")
+    spec_run.main(["budget", str(run.path), "10", "--audit-every", "1"])
+    iterations.close(run.path, "failed", reason="first round")
+    planner = _launch(run, subagent_type="planner")
+    assert "audit is due" in loop_guard.decide(planner)
+    assert loop_guard.decide(_launch(run, subagent_type="proof-planner")) is None
+    assert proof.start(run.path)["status"] == "blocked"  # missing frozen Verus spec
+    assert "audit is due" in loop_guard.decide(planner)
+    proof.feedback(run.path, "spec-builder", "supply the required formal contract")
+    assert loop_guard.decide(planner) is None
+    with pytest.raises(proof.ProofError):
+        checkpoint.stamp_audit(run.path, [])
+    assert not run.completeness.exists()
+
+
+def test_due_audit_blocks_next_iteration_until_stamped(tmp_path, loop_guard, monkeypatch):
+    monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
+    run = _run(tmp_path)
+    spec_run.main(["budget", str(run.path), "10", "--audit-every", "2", "--attempts", "1"])
+    coder = _launch(run, subagent_type="coding-agent")
+    planner = _launch(run, prompt="Read agents/2-synthesis-loop/planner.md")
+    auditor = _launch(run, subagent_type="auditor")
+    iterations.close(run.path, "failed", reason="first round")
+    assert loop_guard.decide(planner) is None
+    assert loop_guard.decide(coder) is None
+    iterations.close(run.path, "failed", reason="second round")
+
+    # Skipping the auditor does not let the lead begin another iteration.
+    assert "audit is due" in loop_guard.decide(planner)
+    assert "audit is due" in loop_guard.decide(coder)
+    assert loop_guard.decide(_launch(run, subagent_type="critic")) is None
+    assert loop_guard.decide(auditor) is None
+    assert "audit is due" in loop_guard.decide(coder)  # launch alone is insufficient
+    checkpoint.stamp_audit(run.path, [])
+    assert loop_guard.decide(planner) is None
+    assert loop_guard.decide(coder) is None  # blocked requests did not use coding attempts
+
+    # New implementation bytes do not trigger an off-schedule audit.
+    (run.impl / "store.py").write_text("v2\n")
+    iterations.close(run.path, "failed", reason="third round")
+    assert loop_guard.decide(coder) is None
+    assert loop_guard.decide(auditor)
+    iterations.close(run.path, "failed", reason="fourth round")
+    assert "audit is due" in loop_guard.decide(coder)
+    assert loop_guard.decide(auditor) is None
+
+
+def test_default_audit_interval_is_enforced_without_a_budget(tmp_path, loop_guard, monkeypatch):
+    monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
+    monkeypatch.setattr(loop_guard, "DEFAULT_AUDIT_EVERY", 15)
+    run = _run(tmp_path)
+    coder = _launch(run, subagent_type="coding-agent")
+    auditor = _launch(run, subagent_type="auditor")
+    for _ in range(14):
+        iterations.close(run.path, "failed", reason="x")
+    assert loop_guard.decide(coder) is None
+    assert loop_guard.decide(auditor)
+    iterations.close(run.path, "failed", reason="x")
+    assert "audit is due" in loop_guard.decide(coder)
+    assert loop_guard.decide(auditor) is None
+
+
+@pytest.mark.parametrize(
+    "stamp", [None, {}, {"finished_iterations": 99}, {"finished_iterations": "2"}]
+)
+def test_launch_history_or_invalid_stamp_does_not_satisfy_due_audit(
+    tmp_path,
+    loop_guard,
+    monkeypatch,
+    stamp,
+):
+    monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
+    run = _run(tmp_path)
+    spec_run.main(["budget", str(run.path), "10", "--audit-every", "2"])
+    for _ in range(2):
+        iterations.close(run.path, "failed", reason="x")
+    (run.path / ".loop_guard.json").write_text(json.dumps({"last_audit_done": 2}))
+    if stamp is not None:
+        run.audit.mkdir(parents=True, exist_ok=True)
+        run.completeness.write_text(json.dumps(stamp))
+    assert "audit is due" in loop_guard.decide(_launch(run, subagent_type="coding-agent"))
+
+
+def test_final_audit_is_allowed_after_budget_even_between_intervals(
+    tmp_path, loop_guard, monkeypatch
+):
+    monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
+    run = _run(tmp_path)
+    spec_run.main(["budget", str(run.path), "1", "--audit-every", "15"])
+    iterations.close(run.path, "failed", reason="budget spent")
+    assert loop_guard.decide(_launch(run, subagent_type="auditor")) is None
+
+
+@pytest.mark.parametrize(
+    "manifest, tool_name",
+    [("hooks/hooks.json", "Agent"), ("adapters/codex/hooks.json", "spawn_agent")],
+)
+def test_audit_schedule_through_registered_hook_command(tmp_path, monkeypatch, manifest, tool_name):
+    """Run the manifest's shell command, including its exit-code handling and tool payload."""
+    monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
+    run = _run(tmp_path)
+    spec_run.main(["budget", str(run.path), "10", "--audit-every", "2"])
+    workflow = HOOKS.parent
+    manifest_path = workflow / manifest
+    if tool_name == "spawn_agent":
+        # Exercise the actual installer and its idempotent merge, not just the shipped template.
+        project = run.path.parent.parent
+        for _ in range(2):
+            installed = subprocess.run(
+                [
+                    "bash",
+                    str(workflow.parent / "scripts" / "install.sh"),
+                    "--agent",
+                    "codex",
+                    str(project),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert installed.returncode == 0, installed.stdout + installed.stderr
+        manifest_path = project / ".codex" / "hooks.json"
+    hooks = json.loads(manifest_path.read_text())["hooks"]["PreToolUse"]
+    commands = [
+        h["command"]
+        for entry in hooks
+        if re.fullmatch(entry["matcher"], tool_name)
+        for h in entry["hooks"]
+        if "loop_guard.py" in h["command"]
+    ]
+    assert len(commands) == 1
+    env = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(workflow), "PLUGIN_ROOT": str(workflow)}
+
+    def launch(role):
+        payload = _launch(run, subagent_type=role)
+        payload["tool_name"] = tool_name
+        if tool_name == "spawn_agent":
+            payload["tool_input"] = {"agent_type": "default", "message": f"Read {role}.md"}
+        return subprocess.run(
+            commands[0],
+            shell=True,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=run.path,
+        )
+
+    assert launch("auditor").returncode == 2
+    for _ in range(2):
+        iterations.close(run.path, "failed", reason="x")
+    blocked = launch("coding-agent")
+    assert blocked.returncode == 2 and "audit is due" in blocked.stderr
+    assert launch("auditor").returncode == 0
+    assert launch("coding-agent").returncode == 2
+    checkpoint.stamp_audit(run.path, [])
+    assert launch("coding-agent").returncode == 0
+    assert launch("auditor").returncode == 2
 
 
 def test_the_specification_is_never_limited(tmp_path, loop_guard, monkeypatch):
@@ -169,7 +361,9 @@ def test_reuse_copies_an_earlier_runs_discovery_and_marks_what_is_fresh(tmp_path
     for name, sha in (("sys1", head), ("sys2", "0" * 40)):
         d = first.references / name
         d.mkdir(parents=True)
-        (d / "spec.json").write_text(json.dumps({"source": f"owner/{name} @ {sha}", "axes": {"a": 1}}))
+        (d / "spec.json").write_text(
+            json.dumps({"source": f"owner/{name} @ {sha}", "axes": {"a": 1}})
+        )
         (d / "verification.json").write_text('{"ok": true}\n')
     (first.references / "axes.json").write_text('{"axes": []}\n')
     first.sources.mkdir(parents=True, exist_ok=True)

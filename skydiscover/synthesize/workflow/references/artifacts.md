@@ -209,6 +209,14 @@ Nothing a run produced is deleted:
 
 ### Guards
 
+Auditor sessions live under `synthesis/audit/<session-id>/`, selected by `synthesis/audit/current.json`.
+`inputs/` contains frozen task, implementation, specification, and interface snapshots. The helper
+owns `manifest.json`, `state.json`, `result.json`, `attempts/`, and `proof/obligations.json`. The proof
+planner owns `proof/plan.md`; the proof coder owns `proof/overlay.json`. `feedback.json` is written
+through `spec.proof feedback` and handed to the lead. `specification/verus.json` belongs to the
+spec-builder and is frozen for the audit. Existing `synthesis/audit/<finding-id>/` evidence remains
+separate from session directories.
+
 - `hooks/process_guard.py` (PreToolUse on Bash): agents may stop only processes this session
   started. `pkill`, `killall`, and `kill` fed by `pgrep`/`pidof` are refused, and so is
   `kill <pid>` for a pid outside the session (a shared server, another user's job).
@@ -216,7 +224,12 @@ Nothing a run produced is deleted:
 - `hooks/loop_guard.py` (PreToolUse on Task/Agent): an iteration gets at most
   `max_coding_attempts` coding-agent launches (`budget.json`, default 5); at the cap the round is
   closed with `spec.iterations fail` and counts toward the budget. The auditor runs during the loop
-  only every `audit_every` iterations (default 15); Phase 3 reviews always run. Decisions go to
+  only every `audit_every` completed iterations (default 15), enforced by the guard. When due,
+  the guard refuses the next planner or coding-agent launch until the session records an audit
+  result or outer-planner handoff in `synthesis/audit/completed.json` (`finished_iterations`), or
+  `stamp-audit` records accepted coverage in `completeness.json`. An unresolved result releases the
+  schedule for outer-loop repair but cannot satisfy release verification. An auditor launch alone
+  does not advance the schedule; interrupted audits can be retried. Phase 3 reviews always run. Decisions go to
   `<run>/loop_guard.log.jsonl`. Finished iterations, scored or failed, are in
   `synthesis/bench/iterations.json`.
 - `spec.reuse <run>` (Step 1) copies the newest earlier run's discovery of the domain from

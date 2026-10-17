@@ -3,6 +3,13 @@
 The workflow keeps enough state to resume a run, explain every enforced choice, and reuse verified
 knowledge across runs without treating a cache as truth.
 
+The auditor's proof loop has its own persistent state under `synthesis/audit/<session-id>/`.
+`spec.proof feedback <run> --owner planner|spec-builder --reason "..."` records a versioned request
+with its diagnostics; it does not modify the main plan or confirm a defect. The lead invokes the
+owner to decide the change. The main planner cites the session and evidence when updating its
+brief. Proof workers own their proof strategy and overlay only; spec and executable code remain
+frozen until the outer workflow supplies new inputs.
+
 ## The Decision Log
 
 `<run>/decision_log.json` records requirements, findings, who decided each, and the test that

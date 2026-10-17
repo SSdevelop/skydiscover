@@ -28,6 +28,15 @@ proven or tested, benchmarked, assumptions explicit.
 The lead sequences the work, resolves handoffs, records decisions, and reports the result. It never
 does a role's job itself; each role writes its own files.
 
+The auditor can run its own Verificable Rust Loop with `proof-planner.md` and `proof-coder.md`.
+Record `audit_mode: test` (default) or `audit_mode: proof` in task.md from the initial requirements,
+and `audit_target` when the implementation has more than one possible target. This setting is
+independent of `checked_by: proof`. C++ routes to test auditing regardless of the request; Rust
+routes to the requested method. The auditor's spec and implementation are frozen per invocation.
+For Rust proof auditing, the spec-builder supplies the Verus model and `specification/verus.json`
+before auditing; configuration and the supported source adapter are documented in
+`skydiscover/synthesize/examples/verus-audit/README.md`.
+
 ## Files
 
 The `agents/` tree is the pipeline: one brief per role, filed under the phase that runs it.
@@ -195,8 +204,9 @@ One light question, skipped if the answer is obvious. Ask exactly:
 > Quick (≈20 iterations) · Standard (≈60 iterations) · Thorough (≈200 iterations)
 
 Record the choice in the decision log and with `spec.run budget <run> <N> [--attempts A]
-[--audit-every M]` (defaults: 5 coding attempts per iteration, the auditor every 15 iterations, as
-in the paper). The run stops when the budget is spent: a hook (`hooks/budget_guard.py`) refuses to
+[--audit-every M]`. The guard owns audit scheduling; use the command's defaults unless the user
+requests different limits. The run stops when the budget is spent: a hook (`hooks/budget_guard.py`)
+refuses to
 let you end your turn during the synthesis loop while fewer than N iterations are finished. When you truly need the user's input
 mid-loop, run `spec.run pause <run> --reason "<question>"` first; that lets exactly one turn end.
 
@@ -269,15 +279,21 @@ Run a fresh agent for each step; every brief is in `agents/2-synthesis-loop/`:
    benchmark scores. The checkpoint binds one coding-agent change to one scored evaluation (the
    artifact bytes and the leaderboard entry); it refuses an unscored artifact, and it is written
    every iteration, never only at publish time.
-4. **Auditor** (`auditor.md`). Runs every `--audit-every` iterations (default 15), not after every
-   change: auditing reads the whole implementation and is the most expensive role. First state
-   `audit decision: run|skip (reason: <n> iterations since the last audit)`; `hooks/loop_guard.py`
-   refuses an audit that is not due. Its Phase 3 reviews always run. The auditor writes a test for each confirmed hack and
-   writes a completeness stamp (`spec.checkpoint stamp-audit <run>`) even on a clean pass. The selected candidate must carry a current audit
-   before any release claim; `run_tests.py --run <run> --production-ready` checks the stamp.
+4. **Auditor** (`auditor.md`). Request the role; `hooks/loop_guard.py` decides whether the launch
+   is admitted. Follow its refusal when it skips the audit or requires one before continuing.
+   The auditor writes a test for each confirmed hack and writes a completeness stamp
+   (`spec.checkpoint stamp-audit <run>`) even on a clean pass. The selected candidate must carry a
+   current audit before any release claim; `run_tests.py --run <run> --production-ready` checks
+   the stamp.
 5. **Critic** (`critic.md`): attributes the results to design choices, returns ranked `file:line`
    feedback, and appends what this iteration ruled out to `plan.md`'s `## Learnings`. When it
    calls for a design decision, the planner runs next and rewrites `## Brief`.
+
+If the auditor returns proof-loop feedback, read its session ID and bindings before acting.
+Invoke the main planner on an implementation/design request and the spec-builder on a spec
+request. The requested change belongs to the outer loop, and requires new evaluation where
+executable code changes and a new audit session. Proof workers update their proof plan only;
+the main planner explicitly updates `synthesis/plan.md` from the returned evidence.
 
 Who writes what in the loop: the planner owns `plan.md` (the critic appends to `## Learnings`
 only), the evaluator in performance mode owns `bench/leaderboard.json` and the checkpoints, the
@@ -434,6 +450,8 @@ and the box of the architecture figure it plays.
 | `isa` | 2 | Coding Agent (code + proof) | on a stall, propose a new design from the failure log |
 | `evaluator` | 2 | Evaluator | correctness mode: write the trusted reference and the tests; performance mode: run the scored benchmark, name the bottleneck, write the checkpoint |
 | `auditor` | 2, 3 | Auditor | find reward hacks and close them with tests; in Phase 3, review the selected candidate under one production lens, then attack it: construct independent contract-breaking executions |
+| `proof-planner` | 2, 3 | Auditor | plan proof steps from frozen obligations and Verus diagnostics; return design or spec blockers through the auditor |
+| `proof-coder` | 2, 3 | Auditor | add proof-only overlays to a frozen Rust implementation and run Verus; never change executable code or the specification |
 | `critic` | 2 | Critic | attribute measurements to design choices; direct the next iteration |
 
 ## Core Commands

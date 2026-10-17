@@ -7,6 +7,7 @@ The agents and the delivery hook run these; you do not. `validate_test.py` and `
 |---|---|
 | `validate_test.py` | keep or reject one new test: it must pass the reference implementation and fail a broken one; `--seed` for a test the task ships: reference only |
 | `run_tests.py` | run the suite against a candidate; `--production-ready` adds the release checks |
+| `run_verus.py` | one bounded proof attempt against frozen Rust/spec inputs; `--replay` rechecks accepted evidence |
 | `check_release.py` | the release checks: no defect is open, the auditor saw this code |
 | `suite.py` | run a suite's `test.sh` against one implementation |
 | `kb/` | `kbtool.py` reads and checks the knowledge base wiki ([README](kb/README.md)) |

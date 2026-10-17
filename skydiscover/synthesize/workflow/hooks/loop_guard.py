@@ -8,7 +8,9 @@ Two limits, read from <run>/budget.json (`spec.run budget <run> <N> --attempts A
   launch is refused: the lead closes the round with `spec.iterations fail <run> --reason ...` and
   starts the next one from the best checkpoint, instead of retrying one idea without end.
 - **Auditor every M iterations** (`audit_every`, default 15). During the synthesis loop the
-  auditor runs once M iterations have finished since its last run, not after every change. Its
+  auditor is due once M iterations have finished since its last completion stamp. An overdue
+  audit blocks the next planner or coding-agent launch; starting an auditor does not discharge
+  that obligation. An interrupted audit can be retried until it writes its stamp. Its
   Phase 3 final reviews (production lens, attack, the pass on the selected candidate) and any run
   once the budget is spent are never refused.
 
@@ -29,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-AGENT_TOOLS = {"Task", "Agent"}
+AGENT_TOOLS = {"Task", "Agent", "spawn_agent"}
 DEFAULT_ATTEMPTS = int(os.environ.get("SKYDISCOVER_MAX_CODING_ATTEMPTS", "5") or "5")
 DEFAULT_AUDIT_EVERY = int(os.environ.get("SKYDISCOVER_AUDIT_EVERY", "15") or "15")
 STATE = ".loop_guard.json"
@@ -61,16 +63,71 @@ def _tokens():
 
 
 def role_of(tool_input: Dict[str, Any]) -> Optional[str]:
-    """'coding' or 'auditor' for a launch of one of those roles, else None."""
-    kind = str(tool_input.get("subagent_type") or "").lower()
-    text = f"{tool_input.get('prompt') or ''}\n{tool_input.get('description') or ''}"
-    if kind.endswith(("coding-agent", ":dsa")) or kind == "dsa" or re.search(
-        r"(coding-agent|/dsa)\.md\b", text
+    """The loop role, recognized from a harness's role name or the supplied brief."""
+    kind = str(tool_input.get("subagent_type") or tool_input.get("agent_type") or "").lower()
+    text = _prompt(tool_input)
+    if (
+        kind.endswith(("coding-agent", ":dsa"))
+        or kind == "dsa"
+        or re.search(r"(coding-agent|/dsa)\.md\b", text)
     ):
         return "coding"
     if kind.endswith("auditor") or re.search(r"\bauditor\.md\b", text):
         return "auditor"
+    if (
+        kind == "planner"
+        or kind.endswith(":planner")
+        or re.search(r"(?<![\w-])planner\.md\b", text)
+    ):
+        return "planner"
     return None
+
+
+def _prompt(tool_input: Dict[str, Any]) -> str:
+    return "\n".join(str(tool_input.get(key) or "") for key in ("prompt", "message", "description"))
+
+
+def last_audit_finished(run: Path, done: int) -> int:
+    """Scheduling uses completed audits, not the old last_audit_done launch counter.
+
+    Do not require the stamp to cover the latest bytes here: candidates change between scheduled
+    audits. The release check independently requires coverage of the delivered candidate.
+    """
+    audit = run / "synthesis" / "audit"
+    completed = _read(audit / "completed.json")
+    last_completed = 0
+    if isinstance(completed, dict):
+        n = completed.get("finished_iterations")
+        if (
+            type(n) is int
+            and 0 <= n <= done
+            and isinstance(completed.get("bindings"), dict)
+            and isinstance(completed.get("session"), str)
+            and completed.get("status")
+            in {
+                "verified",
+                "incomplete",
+                "unsupported",
+                "blocked",
+                "tool_error",
+                "handoff",
+                "test_complete",
+            }
+        ):
+            last_completed = n
+    stamp = _read(audit / "completeness.json")
+    if not isinstance(stamp, dict):
+        return last_completed
+    last = stamp.get("finished_iterations")
+    if (
+        type(last) is int
+        and 0 <= last <= done
+        and isinstance(stamp.get("artifact_id"), str)
+        and isinstance(stamp.get("input_digests"), dict)
+        and isinstance(stamp.get("findings"), list)
+    ):
+        return max(last, last_completed)
+    return last_completed
 
 
 def limits(run: Path) -> Dict[str, int]:
@@ -110,7 +167,9 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
         return None
     tu = _tokens()
     transcript = Path(payload.get("transcript_path") or "")
-    run = tu.find_run(Path(payload.get("cwd") or os.getcwd()), transcript if transcript.is_file() else None)
+    run = tu.find_run(
+        Path(payload.get("cwd") or os.getcwd()), transcript if transcript.is_file() else None
+    )
     if run is None:
         return None
     iteration = tu.current_iteration(run)
@@ -122,13 +181,36 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
     if state.get("iteration") != iteration:
         state = {**state, "iteration": iteration, "attempts": 0}
 
+    last = last_audit_finished(run, done)
+    due = done - last >= lim["audit_every"]
+    if due and role in {"coding", "planner"}:
+        _log(
+            run, {"refused": role, "iteration": iteration, "reason": "audit due", "finished": done}
+        )
+        return (
+            f"loop-guard: an audit is due after {done} finished iterations "
+            f"(last completed after {last}; interval {lim['audit_every']}). "
+            "Run the auditor before starting the next iteration. It must record its audit "
+            "result or handoff; a launch alone does not complete the audit."
+        )
+    if role == "planner":
+        return None
+
     if role == "coding":
         if state["attempts"] >= lim["attempts"]:
-            _log(run, {"refused": "coding", "iteration": iteration, "attempts": state["attempts"], "cap": lim["attempts"]})
+            _log(
+                run,
+                {
+                    "refused": "coding",
+                    "iteration": iteration,
+                    "attempts": state["attempts"],
+                    "cap": lim["attempts"],
+                },
+            )
             return (
                 f"loop-guard: iteration {iteration} has used its {lim['attempts']} coding attempts "
                 "(the per-iteration cap). Do not launch another coding agent for it. Close it: "
-                f"`python3 -m skydiscover.synthesize.spec.iterations fail {run} --reason \"<what was "
+                f'`python3 -m skydiscover.synthesize.spec.iterations fail {run} --reason "<what was '
                 "tried and why it did not pass>\"`, restore the best checkpoint's "
                 ".verification/source into synthesis/impl/ if the working copy is broken, have the "
                 f"critic log what this round ruled out, then start iteration {iteration + 1} with the "
@@ -136,21 +218,35 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
             )
         state["attempts"] += 1
         _save(run, state)
-        _log(run, {"allowed": "coding", "iteration": iteration, "attempt": state["attempts"], "cap": lim["attempts"]})
+        _log(
+            run,
+            {
+                "allowed": "coding",
+                "iteration": iteration,
+                "attempt": state["attempts"],
+                "cap": lim["attempts"],
+            },
+        )
         return None
 
     # the auditor
-    text = f"{tool_input.get('prompt') or ''}\n{tool_input.get('description') or ''}"
-    last = int(state.get("last_audit_done", 0))
+    text = _prompt(tool_input)
     final = bool(_FINAL_REVIEW.search(text)) or (lim["budget"] and done >= lim["budget"])
-    due = done - last >= lim["audit_every"]
     if final or due:
-        if due and not final:
-            state["last_audit_done"] = done
-        _save(run, state)
-        _log(run, {"allowed": "auditor", "iteration": iteration, "final": bool(final), "finished": done})
+        _log(
+            run,
+            {"allowed": "auditor", "iteration": iteration, "final": bool(final), "finished": done},
+        )
         return None
-    _log(run, {"refused": "auditor", "iteration": iteration, "finished": done, "last_audit_finished": last})
+    _log(
+        run,
+        {
+            "refused": "auditor",
+            "iteration": iteration,
+            "finished": done,
+            "last_audit_finished": last,
+        },
+    )
     return (
         f"loop-guard: the auditor runs every {lim['audit_every']} iterations during the loop "
         f"(last after iteration {last}; next once iteration {last + lim['audit_every']} is finished). "

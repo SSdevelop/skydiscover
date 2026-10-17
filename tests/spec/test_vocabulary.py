@@ -95,6 +95,8 @@ def _hits():
         if f.name == "test_vocabulary.py":
             continue
         for i, line in enumerate(text.splitlines(), 1):
+            # Verus's literal CLI option is an external API, not workflow terminology.
+            line = line.replace("--no-cheating", "")
             if "workspace-write" in line or "*deliverable*" in line or "first releases" in line:
                 continue  # Codex's own flag; phrases the delivery hook matches; a reader of old files
             for pat, pinned in RETIRED.items():
@@ -135,6 +137,7 @@ def test_examples_use_the_pipeline_names_for_the_pipeline_things():
     hits = []
     for f in _example_files():
         for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            line = line.replace("--no-cheating", "")
             for pat in _PIPELINE_ONLY:
                 if re.search(pat, line, re.IGNORECASE):
                     hits.append(

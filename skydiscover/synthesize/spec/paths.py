@@ -550,6 +550,16 @@ class Run:
         return self.audit / "completeness.json"
 
     @property
+    def audit_session(self) -> Path:
+        """Pointer to the current frozen auditor session."""
+        return self.audit / "current.json"
+
+    @property
+    def verus_config(self) -> Path:
+        """Frozen Verus obligations, target and proof-search limits."""
+        return self.specification / "verus.json"
+
+    @property
     def severity(self) -> Path:
         """The severity each finding was first written with, kept by the findings CLI, so a defect
         cannot be silently downgraded before delivery. Hidden; nobody edits it."""
