@@ -672,6 +672,97 @@ def test_helper_summary_cannot_add_preconditions_or_replace_code(text):
         }]})
 
 
+@pytest.mark.parametrize("target", ["obligation", "helper", "helper_with_contract", "loop"])
+def test_checked_termination_annotations_verify_and_replay(run, verus, target):
+    from skydiscover.synthesize.spec.proof_source import functions
+
+    recursive = "if n == 0 { 0 } else { helper(n - 1) }"
+    if target == "obligation":
+        source = "pub fn count(n: u64) -> u64 { " + recursive.replace("helper", "count") + " }"
+    elif target == "loop":
+        source = "pub fn count(n: u64) -> u64 { let mut i = n; while i > 0 { i = i - 1; } 0 }"
+    else:
+        contract = "ensures answer == 0," if target == "helper_with_contract" else ""
+        returned = "(answer: u64)" if contract else "u64"
+        source = (
+            f"fn helper(n: u64) -> {returned} {contract} {{ {recursive} }}\n"
+            "pub fn count(n: u64) -> u64 { helper(n) }"
+        )
+    configure_target(run, {"lib.rs": "use vstd::prelude::*; verus! {" + source + "}"},
+                     "lib.rs", "count", "result == 0")
+    proof.start(run.path)
+    assert proof.check(run.path)["status"] == "incomplete"
+    frozen = proof._bindings(run)
+    path, base = overlay_path(run)
+    if target == "loop":
+        ts = tokens(base)
+        start = next(i for i, t in enumerate(ts) if t.text == "while")
+        before = next(i for i in range(start, len(ts)) if ts[i].text == "{")
+        metric = "i"
+    else:
+        before = functions(base)["count" if target == "obligation" else "helper"][1]
+        metric = "n"
+    kind = "helper_ensures" if target == "helper" else "decreases"
+    prefix = "ensures audit_result == 0, " if target == "helper" else ""
+    def write_metric(value):
+        path.write_text(json.dumps({"insertions": [{
+            "before": before, "kind": kind, "text": prefix + f"decreases {value},",
+        }]}))
+
+    write_metric("0")  # An admitted annotation must still prove strict decrease.
+    assert proof.check(run.path)["status"] == "incomplete"
+    write_metric(metric)
+    result = proof.check(run.path)
+    assert result["status"] == "verified", result
+    assert proof.replay(run.path)["obligations"] == ["required"]
+    assert proof._bindings(run) == frozen
+
+
+@pytest.mark.parametrize("kind,prefix", [("decreases", ""), ("helper_ensures", "ensures true, ")])
+@pytest.mark.parametrize("text", [
+    "decreases", "decreases ,", "decreases n, requires false,",
+    "decreases n, ensures false,", "decreases n when false,",
+    "decreases n, decreases_when false,", "decreases n via trick,",
+    "decreases n, decreases_by trick,", "decreases n, { return 0; }",
+    "decreases n, fn replacement() {}", "decreases assume(false),",
+    "decreases n, #[verifier::exec_allows_no_decreases_clause]",
+])
+def test_termination_annotation_cannot_weaken_contract_or_disable_checks(kind, prefix, text):
+    from skydiscover.synthesize.spec.proof_source import functions
+
+    source = "verus! { fn helper(n: u64) -> u64 { n } }"
+    with pytest.raises(SourceError):
+        apply_overlay(source, {"insertions": [{
+            "before": functions(source)["helper"][1], "kind": kind, "text": prefix + text,
+        }]})
+
+
+def test_function_termination_preserves_contracts_and_accepts_lexicographic_metrics():
+    from skydiscover.synthesize.spec.proof_source import functions
+
+    source = "verus! { fn count(n: u64, m: u64) -> (r: u64) requires n > 0, ensures r == n, { n } }"
+    before = functions(source)["count"][1]
+    result = apply_overlay(source, {"insertions": [{
+        "before": before, "kind": "decreases", "text": "decreases n, m,",
+    }]}, protected_functions=("count",))
+    assert result.replace("\ndecreases n, m,\n", "") == source
+    existing = source.replace("{ n }", "decreases n, { n }")
+    with pytest.raises(SourceError, match="existing termination"):
+        apply_overlay(existing, {"insertions": [{
+            "before": functions(existing)["count"][1], "kind": "decreases", "text": "decreases m,",
+        }]})
+
+
+def test_termination_annotation_cannot_target_arbitrary_block():
+    source = "verus! { fn helper() { if true { } } }"
+    ts = tokens(source)
+    before = next(i for i, t in enumerate(ts) if t.text == "true") + 1
+    with pytest.raises(SourceError, match="loop body"):
+        apply_overlay(source, {"insertions": [{
+            "before": before, "kind": "decreases", "text": "decreases 0,",
+        }]})
+
+
 @pytest.mark.parametrize("contract", ["", "ensures result == n,"])
 def test_helper_summary_cannot_change_frozen_contract(contract):
     from skydiscover.synthesize.spec.proof_source import functions

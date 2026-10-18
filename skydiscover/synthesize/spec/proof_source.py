@@ -504,6 +504,22 @@ macro_rules! {_ATOMIC_PEEK_SHIM} {{
     return "\n".join(lines) + "\n"
 
 
+_FUNCTION_CLAUSES = {
+    "requires", "ensures", "recommends", "returns", "decreases", "decreases_when",
+    "decreases_by", "opens_invariants", "no_unwind", "when", "via", "where",
+}
+
+
+def _check_decreases(words: list[str]) -> None:
+    # Verus checks the metric, including lexicographic tuples. Do not admit conditional
+    # termination, extra contracts, attributes, or a replacement executable body here.
+    if (
+        words[:1] != ["decreases"] or not any(w != "," for w in words[1:])
+        or (_FUNCTION_CLAUSES | {"{", "}", ";", "fn"}).intersection(words[1:])
+    ):
+        raise SourceError("decreases accepts only unconditional termination expressions")
+
+
 def apply_overlay(
     base: str, overlay: dict, *, contract_macros: tuple[str, ...] = (),
     protected_functions: tuple[str, ...] = (),
@@ -534,9 +550,17 @@ def apply_overlay(
         used.add(before)
         added = check_source(text, overlay=True)
         ap = pairs(added)
-        aw = [t.text for t in added]
-        if kind == "helper_ensures":
-            targets = [(name, fn, body) for name, (fn, body, _) in fs.items() if body == before]
+        aw = [t.text.removeprefix("r#") for t in added]
+        targets = [(name, fn, body) for name, (fn, body, _) in fs.items() if body == before]
+        if kind == "decreases" and targets:
+            if len(targets) != 1 or ts[targets[0][1]].text != "fn":
+                raise SourceError("function decreases requires a directly declared function header")
+            _, fn, body = targets[0]
+            header = {t.text.removeprefix("r#") for t in ts[fn:body]}
+            if {"decreases", "decreases_when", "decreases_by"}.intersection(header):
+                raise SourceError("cannot modify an existing termination clause")
+            _check_decreases(aw)
+        elif kind == "helper_ensures":
             if len(targets) != 1:
                 raise SourceError("helper_ensures goes immediately before a helper function body")
             name, fn, body = targets[0]
@@ -547,13 +571,19 @@ def apply_overlay(
             if fn and ts[fn - 1].text in {"spec", "proof"}:
                 raise SourceError("helper_ensures requires an executable helper")
             header = [t.text for t in ts[fn:body]]
-            clauses = {"requires", "ensures", "recommends", "returns", "decreases",
-                       "opens_invariants", "no_unwind", "when", "where"}
+            clauses = _FUNCTION_CLAUSES
             if clauses.intersection(header):
                 raise SourceError("helper_ensures cannot modify an existing function contract")
+            # One insertion per token: allow a checked helper summary and its recursive
+            # metric together, rather than forcing competing insertions at the body brace.
+            postconditions = aw
+            if "decreases" in aw:
+                split = aw.index("decreases")
+                _check_decreases(aw[split:])
+                postconditions = aw[:split]
             if (
-                aw[:1] != ["ensures"] or len(aw) < 2
-                or (clauses | {"{", "}", ";", "fn"}).intersection(aw[1:])
+                postconditions[:1] != ["ensures"] or len(postconditions) < 2
+                or (clauses | {"{", "}", ";", "fn"}).intersection(postconditions[1:])
             ):
                 raise SourceError("helper_ensures accepts only postcondition expressions")
             if "->" in header:
@@ -583,8 +613,8 @@ def apply_overlay(
                     raise SourceError("proof insertion must be exactly one proof { ... } block")
                 if ts[before - 1].text not in {"{", ";", "}"}:
                     raise SourceError("proof blocks must start at a statement boundary")
-            elif kind == "invariant":
-                if ts[before].text != "{" or not aw or aw[0] != "invariant":
+            elif kind in {"invariant", "decreases"}:
+                if ts[before].text != "{" or not aw or aw[0] != kind:
                     raise SourceError("invariants go immediately before a loop body")
                 if any(w in aw for w in ("{", "}", ";", "fn", "requires", "ensures")):
                     raise SourceError("loop annotations cannot contain blocks or declarations")
@@ -594,6 +624,11 @@ def apply_overlay(
                     j -= 1
                 if j < 0 or ts[j].text not in {"while", "loop", "for"}:
                     raise SourceError("invariant insertion is not at a loop body")
+                if kind == "decreases":
+                    _check_decreases(aw)
+                    if any(t.text in {"decreases", "decreases_when", "decreases_by"}
+                           for t in ts[j:before]):
+                        raise SourceError("cannot modify an existing termination clause")
             elif kind == "ghost":
                 if aw[:2] != ["let", "ghost"] or not aw[-1:] == [";"]:
                     raise SourceError("ghost insertion must be a let ghost declaration")

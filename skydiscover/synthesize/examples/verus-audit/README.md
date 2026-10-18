@@ -104,8 +104,9 @@ python3 -m skydiscover.synthesize.spec.checkpoint stamp-audit <run>
 `workflow/scripts/run_verus.py --run <run>` performs one attempt; `--replay` checks accepted evidence
 again without consuming proof-search budget. Use the installed scripts path outside this directory.
 
-Permitted overlays insert balanced proof blocks, loop annotations, fresh ghost bindings, fresh
-helper proof functions, or checked helper postconditions. They cannot remove or replace source tokens. Verification source is
+Permitted overlays insert balanced proof blocks, loop annotations, function termination clauses,
+fresh ghost bindings, fresh helper proof functions, or checked helper postconditions.
+They cannot remove or replace source tokens. Verification source is
 regenerated from frozen inputs on every check and replay; editing generated files cannot change
 the proof that gets accepted.
 
@@ -116,6 +117,16 @@ named return keeps its original name. The helper body must prove its postconditi
 whole-target verification. This supports modular proofs without editing executable code.
 Existing contracts, authoritative obligation functions, preconditions, and executable bodies
 cannot be changed by this insertion. An incorrect summary fails verification.
+
+Use `kind: "decreases"` at a directly declared function's opening body brace to insert
+`decreases current.height,` or a lexicographic metric such as `decreases n, m,`. This also works
+at a loop body when no invariants are needed. Existing requires/ensures clauses remain intact;
+existing termination clauses cannot be replaced. Conditional termination, additional contracts,
+and disabling termination checking are not permitted. Verus checks strict decrease, so an
+incorrect metric fails verification. To add both a helper summary and a termination metric at
+the same token, use one `helper_ensures` insertion, e.g.
+`ensures audit_result == 0, decreases n,`. A missing recursive termination annotation is proof
+work, not by itself an implementation blocker.
 
 Proof overlays support the complete public atomic-update and invariant proof macro API
 of Verus commit `8dea4a2196ebf99449fe2f141a2fb30acae3f17c`:

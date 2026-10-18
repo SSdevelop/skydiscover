@@ -19,6 +19,11 @@ Use one insertion per file/index pair. Supported kinds are:
 - `proof`: exactly one balanced `proof { ... }` at a statement boundary inside a function.
 - `invariant`: loop clauses beginning with `invariant`, immediately before the loop body's `{`.
   Clause expressions cannot contain blocks or declarations.
+- `decreases`: `decreases <metric>,` immediately before a directly declared function's or loop's
+  opening body brace. Recursive helpers can use `decreases current.height,`; lexicographic
+  metrics such as `decreases n, m,` are supported. Existing contracts stay intact, including
+  authoritative requires/ensures clauses. An existing termination clause cannot be replaced;
+  conditional termination and disabling checks are forbidden. Verus must prove the metric.
 - `ghost`: one `let ghost audit_ghost_name = expression;` at a statement boundary; the name must
   be fresh, and the initializer cannot contain blocks or extra statements.
 - `lemma`: one `proof fn audit_lemma_name(...) ... { ... }` before the enclosing `verus!` closing
@@ -27,6 +32,9 @@ Use one insertion per file/index pair. Supported kinds are:
   This adds a checked summary to a helper with no existing contract. An unnamed return type
   receives the ghost-only binding `audit_result`; use an existing return name when present.
   For example, `ensures audit_result.0 <= keys.len(), audit_result.1 ==> audit_result.0 < keys.len(),`.
+  When a recursive helper needs both a summary and termination, append `decreases <metric>,`
+  in the same insertion: `ensures audit_result == 0, decreases n,`. Use `decreases` alone when
+  the frozen helper already has a contract or needs no new summary.
   The actual helper body must prove the summary. Preconditions, existing-contract changes,
   authoritative obligation changes, and executable edits are forbidden.
 
