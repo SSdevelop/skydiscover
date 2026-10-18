@@ -28,9 +28,16 @@ structural rethink. Keep the plan honest and the next brief actionable.
   each records; candidates draw on them without copying one system). On the proof path
   (`checked_by: proof`) the spec is the formal spec and the pinned theorem instead.
 - The leaderboard, the decision log, the latest profile, and the critic's last feedback.
+- A task-declared initial implementation, when supplied: read its actual source, provenance,
+  validation status and baseline/profile evidence. Distinguish the writable starting candidate
+  from a frozen performance comparator. Follow the user's choice to start from that code;
+  absence of synthesis history does not authorize replacing it with a new implementation.
 - Auditor proof-loop feedback, when the lead supplies it: check its candidate and spec bindings,
   read attempted strategies and diagnostics, and distinguish an incomplete proof from a validated
-  defect. Record whether to refine, pivot, or retain the design in this plan, citing the session.
+  defect. A proof-mode audit must verify or supply a structured `implementation_blocker` before
+  the next outer round. Generic requests, timeouts, and review checkpoints keep proof work with
+  the auditor. For a blocker, read `implementation_change`, `proof_only_analysis`, and the bound
+  diagnostic; incorporate the needed redesign/change in the next coding brief, citing the session.
   Proof workers cannot update your plan. A proposed spec change belongs to spec resolution.
 - The one file you own: `<run>/synthesis/plan.md`, with four sections in this order:
   `## Workload`, `## Candidates`, `## Brief`, `## Learnings`.
@@ -38,6 +45,12 @@ structural rethink. Keep the plan honest and the next brief actionable.
 ## Steps
 
 1. **First invocation of a run: seed the plan.**
+   - If the task supplies a starting implementation, inspect it before selecting the first
+     design. Describe its architecture, measured bottlenecks and correctness/proof gaps; include
+     it in `## Candidates`. Start `## Brief` from that implementation with one justified change,
+     or establish its initial evaluation if evidence is still missing. A later replacement
+     requires an explicit decision supported by measurements or a diagnosed implementation
+     blocker, consistent with the user's constraints.
    - `## Workload`: one paragraph on what makes the workload's signature exploitable (on the proof
      path: what the spec's guard and history make hard, in one paragraph).
    - `## Candidates`: the distinct candidate architectures worth holding open (usually three to

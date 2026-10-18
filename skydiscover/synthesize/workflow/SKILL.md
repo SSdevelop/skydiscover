@@ -208,7 +208,8 @@ Record the choice in the decision log and with `spec.run budget <run> <N> [--att
 requests different limits. The run stops when the budget is spent: a hook (`hooks/budget_guard.py`)
 refuses to
 let you end your turn during the synthesis loop while fewer than N iterations are finished. When you truly need the user's input
-mid-loop, run `spec.run pause <run> --reason "<question>"` first; that lets exactly one turn end.
+mid-loop, run `spec.run pause <run> --reason "<question>"` first. All Stop hooks honor the pause
+until `spec.run resume <run>` archives it after the issue is resolved.
 
 If the knowledge base was cold at Step 1, decide here. On `Standard` or `Thorough`, run the
 kb-builder (`agents/1-specification/kb-builder.md`) once, in the background, pointed at this run's
@@ -244,8 +245,11 @@ the candidate, the interface, and the test suite; everything in this phase lives
    `{property, probe, oracle}`, written to `specification/cards/properties.json`.
 2. If the run has no interface yet (`synthesis/evaluator/interface/`), let the planner seed the
    plan, then run the first coding agent in **bootstrap mode** to create the interface, the benchmark
-   harness, and an unscored first candidate. Correctness is still defined by the specification;
-   this candidate never becomes the trusted reference.
+   harness, and, only when no implementation was supplied, an unscored first candidate. When a
+   baseline was supplied as the starting implementation, preserve its existing working copy and
+   bootstrap only missing interface/harness infrastructure. The frozen baseline stays unchanged.
+   Correctness is still defined by the specification; this candidate never becomes the trusted
+   reference.
 3. Run one evaluator (`agents/2-synthesis-loop/evaluator.md`) in **correctness mode** first to
    write the trusted reference (`synthesis/evaluator/reference/`) from the specification and the
    suite's `test.sh`; the coding agent never defines the reference it is scored against. Then reuse the knowledge base's tests
@@ -290,8 +294,12 @@ Run a fresh agent for each step; every brief is in `agents/2-synthesis-loop/`:
    calls for a design decision, the planner runs next and rewrites `## Brief`.
 
 If the auditor returns proof-loop feedback, read its session ID and bindings before acting.
-Invoke the main planner on an implementation/design request and the spec-builder on a spec
-request. The requested change belongs to the outer loop, and requires new evaluation where
+Keep the auditor's proof-planner/proof-coder loop running until verification succeeds or the
+auditor records a diagnosed implementation blocker with `spec.proof feedback --blocker`.
+Proof review checkpoints, timeouts, unsupported results, and generic feedback do not finish
+the audit. Resolve operational/spec issues in the current audit or pause for their resolution.
+Invoke the main planner in the next round on the structured implementation blocker. That
+requested change belongs to the outer loop, and requires new evaluation where
 executable code changes and a new audit session. Proof workers update their proof plan only;
 the main planner explicitly updates `synthesis/plan.md` from the returned evidence.
 
@@ -478,7 +486,8 @@ spec.run budget <run> <N> [--attempts A] [--audit-every M]   record the budget (
 spec.iterations fail <run> --reason "..."    close an iteration that spent its attempts unscored
 spec.iterations list <run>                   every finished iteration and how it ended
 spec.reuse <run> [--force]                   copy an earlier run's discovery (Step 1)
-spec.run pause <run> --reason "<question>"   let the next turn end to ask the user, mid-loop
+spec.run pause <run> --reason "<question>"   pause for resolution of a question/blocker
+spec.run resume <run>                        resume the saved run after resolution
 spec.run finish <run> --export-to . [--production-ready] [--delete-run] [--refresh-tests]
 spec.archive list <domain>                  every archived run and its per-iteration snapshots
 spec.archive restore <snapshot> <dest>      copy a snapshot back out as a working run directory

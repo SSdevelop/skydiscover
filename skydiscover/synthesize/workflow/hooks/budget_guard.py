@@ -14,8 +14,7 @@ It blocks only when all of these hold:
 - fewer than N iterations are finished (a checkpoint, or a round closed with
   `spec.iterations fail`), and the run is not finished (no <slug>.done);
 - the lead has not asked to pause: `spec.run pause <run> --reason "..."` writes <run>/pause.json,
-  which lets exactly one stop through (so the lead can ask the user something) and is then kept as
-  pause.<time>.json, never deleted;
+  which all Stop hooks honor until `spec.run resume <run>` archives it;
 - no helper (subagent) is still working: waiting for one is legitimate, and Claude Code wakes the
   lead when it finishes (run_state.py: a helper works until its last turn is a final answer; one
   that has just finished does not count);
@@ -141,11 +140,8 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
     pause = run / "pause.json"
     if pause.is_file():
         reason = (_read(pause) or {}).get("reason", "")
-        kept = run / f"pause.{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
-        try:
-            os.replace(pause, kept)
-        except OSError:
-            pass
+        # Stop hooks may run in either order and be retried. Consuming this marker here
+        # caused the audit guard to reject the very same requested pause on its next pass.
         _log(run, {"allowed": "pause", "reason": reason, "checkpoints": done, "budget": n})
         return None
     rs = _run_state()

@@ -5,8 +5,10 @@ knowledge across runs without treating a cache as truth.
 
 The auditor's proof loop has its own persistent state under `synthesis/audit/<session-id>/`.
 `spec.proof feedback <run> --owner planner|spec-builder --reason "..."` records a versioned request
-with its diagnostics; it does not modify the main plan or confirm a defect. The lead invokes the
-owner to decide the change. The main planner cites the session and evidence when updating its
+with its diagnostics; it does not modify the main plan, confirm a defect, or end the audit.
+Only verified evidence or `--owner planner --blocker <file.json>` with a diagnosed necessary
+implementation change permits the next outer round. Review intervals and stalled strategies
+keep the proof loop active with a revised proof plan. The main planner cites the session and evidence when updating its
 brief. Proof workers own their proof strategy and overlay only; spec and executable code remain
 frozen until the outer workflow supplies new inputs.
 

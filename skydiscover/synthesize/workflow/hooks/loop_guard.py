@@ -93,6 +93,10 @@ def last_audit_finished(run: Path, done: int) -> int:
     Do not require the stamp to cover the latest bytes here: candidates change between scheduled
     audits. The release check independently requires coverage of the delivered candidate.
     """
+    # Hooks also run from installed workflow directories outside a Python package checkout.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from spec.proof import completion_allows_planning
+
     audit = run / "synthesis" / "audit"
     completed = _read(audit / "completed.json")
     last_completed = 0
@@ -101,18 +105,7 @@ def last_audit_finished(run: Path, done: int) -> int:
         if (
             type(n) is int
             and 0 <= n <= done
-            and isinstance(completed.get("bindings"), dict)
-            and isinstance(completed.get("session"), str)
-            and completed.get("status")
-            in {
-                "verified",
-                "incomplete",
-                "unsupported",
-                "blocked",
-                "tool_error",
-                "handoff",
-                "test_complete",
-            }
+            and completion_allows_planning(run, completed)
         ):
             last_completed = n
     stamp = _read(audit / "completeness.json")
@@ -190,8 +183,9 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
         return (
             f"loop-guard: an audit is due after {done} finished iterations "
             f"(last completed after {last}; interval {lim['audit_every']}). "
-            "Run the auditor before starting the next iteration. It must record its audit "
-            "result or handoff; a launch alone does not complete the audit."
+            "Run the auditor before starting the next iteration. It must record "
+            "accepted evidence or a diagnosed implementation blocker. Continue proof planning "
+            "and repair; exhaustion, tool failures, and generic handoffs do not complete the audit."
         )
     if role == "planner":
         return None

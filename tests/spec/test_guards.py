@@ -1,7 +1,7 @@
 """The hooks that keep a run going and its history safe.
 
 - budget_guard: during the synthesis loop the lead may not end its turn before the budget is spent,
-  except once per `spec.run pause`, after the run is done, or after five refusals without progress;
+  except while explicitly paused, after the run is done, or after five refusals without progress;
 - history_guard: agents may not delete, move, or overwrite the knowledge base, a run's snapshots,
   or a checkpoint; an edited knowledge-base file is backed up first;
 - a hook error is never lost: it falls back to the runs folder when the run dir cannot be written,
@@ -70,9 +70,12 @@ def test_budget_guard_holds_the_lead_to_the_budget(tmp_path, budget_guard, monke
     reason = budget_guard.decide(_stop(run))
     assert reason and "1 of 3" in reason and "iteration 2" in reason and "spec.run pause" in reason
 
-    # a pause lets exactly one stop through, and is kept, not deleted
+    # Every Stop hook/retry sees the pause until an explicit resume archives it.
     assert spec_run.main(["pause", str(run.path), "--reason", "which server?"]) == 0
     assert budget_guard.decide(_stop(run)) is None
+    assert (run.path / "pause.json").exists()
+    assert budget_guard.decide(_stop(run)) is None
+    assert spec_run.main(["resume", str(run.path)]) == 0
     assert not (run.path / "pause.json").exists() and list(run.path.glob("pause.*.json"))
     assert budget_guard.decide(_stop(run))
 

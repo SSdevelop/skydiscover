@@ -102,6 +102,50 @@ def pairs(ts: list[Token]) -> dict[int, int]:
     return result
 
 
+# Public proof-mode API in vstd at this revision. Internal expansion macros and
+# exec-mode macros are deliberately excluded. Keep the upstream inventory test
+# in sync when upgrading the supported API.
+ATOMIC_PROOF_API_REVISION = "8dea4a2196ebf99449fe2f141a2fb30acae3f17c"
+_ATOMIC_PROOF_MACROS = {
+    "open_atomic_update_in_proof": "atomic",
+    "try_open_atomic_update_in_proof": "atomic",
+    "peek_atomic_update_in_proof": "atomic",
+    "open_atomic_invariant_in_proof": "invariant",
+    "open_local_invariant_in_proof": "invariant",
+}
+_ATOMIC_VSTD_ALIAS = "__audit_atomic_vstd"
+_ATOMIC_CORE_ALIAS = "__audit_atomic_core"
+_ATOMIC_PROOF_SHIM = "__audit_open_atomic_update_in_proof"
+_ATOMIC_PEEK_SHIM = "__audit_peek_atomic_update_in_proof"
+_ATOMIC_PROOF_SHIMS = {
+    "open_atomic_update_in_proof": _ATOMIC_PROOF_SHIM,
+    "peek_atomic_update_in_proof": _ATOMIC_PEEK_SHIM,
+}
+
+
+def _atomic_proof_macro_start(words: list[str], bang: int) -> int | None:
+    """Recognize public vstd proof macros, never an arbitrary path suffix."""
+    name = words[bang - 1]
+    module = _ATOMIC_PROOF_MACROS.get(name)
+    if module is None:
+        return None
+    start = bang - 1
+    while (
+        start >= 2
+        and words[start - 1] == "::"
+        and re.fullmatch(r"[A-Za-z_]\w*", words[start - 2])
+    ):
+        start -= 2
+    if start and words[start - 1] == "::":
+        start -= 1
+    path = words[start:bang]
+    qualified = ["vstd", "::", module, "::", name]
+    exported = ["vstd", "::", name]
+    if path in ([name], qualified, ["::", *qualified], exported, ["::", *exported]):
+        return start
+    return None
+
+
 def check_source(source: str, *, overlay: bool = False) -> list[Token]:
     """Validate added proof text and contract expressions, not admission of candidate source."""
     ts = tokens(source)
@@ -126,7 +170,8 @@ def check_source(source: str, *, overlay: bool = False) -> list[Token]:
         if word == "#":
             raise SourceError("proof additions cannot introduce attributes")
         if word == "!" and i and re.fullmatch(r"[A-Za-z_]\w*", words[i - 1]):
-            if overlay or words[i - 1] != "verus":
+            trusted_atomic = overlay and _atomic_proof_macro_start(words, i) is not None
+            if not trusted_atomic and (overlay or words[i - 1] != "verus"):
                 raise SourceError(f"unsupported macro: {words[i - 1]}!")
         if overlay and (
             word in {"use", "mod", "exec", "unsafe"}
@@ -134,6 +179,32 @@ def check_source(source: str, *, overlay: bool = False) -> list[Token]:
         ):
             raise SourceError(f"proof additions cannot introduce {word}")
     return ts
+
+
+def _bind_proof_macros(source: str, ts: list[Token]) -> str:
+    """Bind admitted calls to the runner's vstd, bypassing candidate macro shadowing.
+
+    The entry file receives an explicit extern-crate binding in spec_attachment. An
+    absolute path also bypasses aliases in nested modules; a crate-root collision is
+    a compiler error. Only inserted proof text is rewritten, never candidate tokens.
+    Validation still scans the entire macro payload for forbidden constructs.
+    """
+    words = [t.text.removeprefix("r#") for t in ts]
+    edits = []
+    for i, word in enumerate(words):
+        if word == "!" and i:
+            start = _atomic_proof_macro_start(words, i)
+            if start is not None:
+                name = words[i - 1]
+                binding = (
+                    f"crate::{_ATOMIC_PROOF_SHIMS[name]}"
+                    if name in _ATOMIC_PROOF_SHIMS
+                    else f"::{_ATOMIC_VSTD_ALIAS}::{_ATOMIC_PROOF_MACROS[name]}::{name}"
+                )
+                edits.append((ts[start].start, ts[i - 1].end, binding))
+    for start, end, binding in reversed(edits):
+        source = source[:start] + binding + source[end:]
+    return source
 
 
 def functions(source: str) -> dict[str, tuple[int, int, int]]:
@@ -302,13 +373,149 @@ def base_source(implementation: str, obligations: list[dict]) -> str:
     return implementation
 
 
-def apply_overlay(base: str, overlay: dict) -> str:
-    """Only insert balanced proof statements, loop annotations and fresh helper proof functions."""
+def macro_functions(source: str, macro: str) -> dict[str, tuple[int, int, int]]:
+    """Index an unconditional crate-root invocation of a frozen contract macro.
+
+    Supported invocation syntax is `crate::name! { impl Type { method(args) { body } ... } }`.
+    Rust expands the actual macro from the frozen spec; we only locate insertion sites. Calls
+    hidden inside other macros, attributed items, functions or modules do not establish coverage.
+    Other source shapes still reach Verus and receive a preparation diagnostic.
+    """
+    ts = tokens(source)
+    ps = pairs(ts)
+    words = [t.text for t in ts]
+    found = {}
+    i, attributed = 0, False
+    while i < len(ts):
+        if words[i] == "#":
+            attributed = True
+        if words[i : i + 5] == ["crate", "::", macro, "!", "{"]:
+            if attributed:
+                raise SourceError(
+                    "contract macro invocation must be unconditional and unattributed"
+                )
+            opening = i + 4
+            if (
+                len(words) <= opening + 3
+                or words[opening + 1] != "impl"
+                or words[opening + 3] != "{"
+            ):
+                raise SourceError("contract macro requires impl Type { method(args) { body } }")
+            typename = words[opening + 2]
+            if not re.fullmatch(r"[A-Za-z_]\w*", typename):
+                raise SourceError("contract macro type must be a crate-root identifier")
+            end = ps[opening + 3]
+            if end + 1 != ps[opening]:
+                raise SourceError("unexpected tokens after contract macro impl")
+            j = opening + 4
+            while j < end:
+                if j + 1 >= end or words[j + 1] != "(":
+                    raise SourceError("contract macro method requires an argument list")
+                body = ps[j + 1] + 1
+                if body >= end or words[body] != "{":
+                    raise SourceError("contract macro method requires a block body")
+                name = typename + "::" + words[j]
+                if name in found:
+                    raise SourceError("duplicate contract macro method: " + name)
+                found[name] = (j, body, ps[body])
+                j = ps[body] + 1
+            i = ps[opening] + 1
+            continue
+        if words[i] in {"{", "(", "["}:
+            end = ps[i]
+            # An attribute is a prefix, not a completed item.
+            if words[i] == "{":
+                attributed = False
+            i = end + 1
+        else:
+            if words[i] == ";":
+                attributed = False
+            i += 1
+    return found
+
+
+def spec_attachment(spec_path: str, macro_imports: dict[str, str]) -> str:
+    """Attach the frozen model and explicit macro-name bindings in verification/build views.
+
+    Explicit imports prevent a candidate declaration from silently shadowing a glob-imported
+    model name used by a macro's call-site resolution. Conflicts become real compiler errors.
+    """
+    import json
+
+    lines = [
+        "\n#[path = " + json.dumps(spec_path) + "] pub mod __audit_spec;",
+        f"extern crate vstd as {_ATOMIC_VSTD_ALIAS};",
+        f"extern crate core as {_ATOMIC_CORE_ALIAS};",
+        # The pinned 8dea4a2 vstd public macro calls an absent au_commit_wrap_proof.
+        # Express its commit-only operation using the real proof-mode try macro.
+        # Verus still checks the atomic block, linear resource and Commit payload;
+        # there is no trusted function body or added logical assumption here.
+        # Forward raw body tokens: a Rust `block` fragment hides Verus @/tracked
+        # syntax from the downstream ghost-expression procedural macro.
+        f"""
+#[macro_export]
+macro_rules! {_ATOMIC_PROOF_SHIM} {{
+    ($au:expr, $state:pat => {{ $($body:tt)* }}) => {{{{
+        let _ = ::{_ATOMIC_VSTD_ALIAS}::atomic::try_open_atomic_update_in_proof!(
+            $au, $state => {{
+                let tracked audit_commit_value = {{ $($body)* }};
+                ::{_ATOMIC_VSTD_ALIAS}::prelude::Tracked::new(
+                    ::{_ATOMIC_VSTD_ALIAS}::atomic::Commit(audit_commit_value)
+                )
+            }}
+        );
+    }}}};
+}}
+// The same revision lacks au_abort_wrap_proof/au_abort_unwrap_proof.
+// Return the still-owned update after a checked abort; tracked_unwrap_err
+// requires the verifier to establish that the operation really aborted.
+#[macro_export]
+macro_rules! {_ATOMIC_PEEK_SHIM} {{
+    ($au:expr, $state:pat => {{ $($body:tt)* }}) => {{{{
+        #[verifier::proof]
+        let audit_peek_result =
+            ::{_ATOMIC_VSTD_ALIAS}::atomic::try_open_atomic_update_in_proof!(
+                $au, $state => {{
+                    let tracked audit_abort_value = {{ $($body)* }};
+                    ::{_ATOMIC_VSTD_ALIAS}::prelude::Tracked::new(
+                        ::{_ATOMIC_CORE_ALIAS}::result::Result::Err(audit_abort_value)
+                    )
+                }}
+            ).get();
+        ::{_ATOMIC_VSTD_ALIAS}::std_specs::result::ResultAdditionalSpecFns::tracked_unwrap_err(
+            audit_peek_result
+        )
+    }}}};
+}}
+""",
+    ]
+    if macro_imports:
+        lines.extend(["extern crate vstd;", "extern crate std;"])
+    for name, path in sorted(macro_imports.items()):
+        if (
+            not re.fullmatch(r"[A-Za-z_]\w*", name)
+            or not isinstance(path, str)
+            or not re.fullmatch(r"(?:crate::__audit_spec|vstd|std)(?:::[A-Za-z_]\w*)+", path)
+        ):
+            raise SourceError(
+                "macro_imports must bind identifiers to frozen spec, vstd or std paths"
+            )
+        lines.append(f"use {path} as {name};")
+    return "\n".join(lines) + "\n"
+
+
+def apply_overlay(
+    base: str, overlay: dict, *, contract_macros: tuple[str, ...] = (),
+    protected_functions: tuple[str, ...] = (),
+) -> str:
+    """Insert checked proof annotations without changing executable tokens or frozen contracts."""
     if set(overlay) != {"insertions"} or not isinstance(overlay["insertions"], list):
         raise SourceError("overlay must contain only an insertions list")
     ts = tokens(base)
     ps = pairs(ts)
     fs = functions(base)
+    for macro in contract_macros:
+        fs.update(macro_functions(base, macro))
     words = {t.text for t in ts}
     edits = []
     used = set()
@@ -328,7 +535,37 @@ def apply_overlay(base: str, overlay: dict) -> str:
         added = check_source(text, overlay=True)
         ap = pairs(added)
         aw = [t.text for t in added]
-        if kind == "lemma":
+        if kind == "helper_ensures":
+            targets = [(name, fn, body) for name, (fn, body, _) in fs.items() if body == before]
+            if len(targets) != 1:
+                raise SourceError("helper_ensures goes immediately before a helper function body")
+            name, fn, body = targets[0]
+            if ts[fn].text != "fn" or any(
+                name == target or target.endswith("::" + name) for target in protected_functions
+            ):
+                raise SourceError("helper_ensures cannot alter an authoritative obligation")
+            if fn and ts[fn - 1].text in {"spec", "proof"}:
+                raise SourceError("helper_ensures requires an executable helper")
+            header = [t.text for t in ts[fn:body]]
+            clauses = {"requires", "ensures", "recommends", "returns", "decreases",
+                       "opens_invariants", "no_unwind", "when", "where"}
+            if clauses.intersection(header):
+                raise SourceError("helper_ensures cannot modify an existing function contract")
+            if (
+                aw[:1] != ["ensures"] or len(aw) < 2
+                or (clauses | {"{", "}", ";", "fn"}).intersection(aw[1:])
+            ):
+                raise SourceError("helper_ensures accepts only postcondition expressions")
+            if "->" in header:
+                arrow = fn + header.index("->")
+                returned = ts[arrow + 1:body]
+                named = len(returned) > 3 and returned[0].text == "(" and returned[2].text == ":"
+                if not named:
+                    if not returned or "audit_result" in words:
+                        raise SourceError("cannot introduce a fresh audit_result binding")
+                    edits.extend([(returned[0].start, "(audit_result: "),
+                                  (ts[body - 1].end, ")")])
+        elif kind == "lemma":
             if before not in {ps[w] for w in wrappers} or aw[:2] != ["proof", "fn"] or len(aw) < 5:
                 raise SourceError("lemmas go before the verus! closing brace")
             name = aw[2]
@@ -368,7 +605,7 @@ def apply_overlay(base: str, overlay: dict) -> str:
                     raise SourceError("ghost bindings must start at a statement boundary")
             else:
                 raise SourceError(f"unsupported insertion kind: {kind}")
-        edits.append((ts[before].start, "\n" + text + "\n"))
+        edits.append((ts[before].start, "\n" + _bind_proof_macros(text, added) + "\n"))
     for offset, text in sorted(edits, reverse=True):
         base = base[:offset] + text + base[offset:]
     return base

@@ -226,9 +226,12 @@ separate from session directories.
   closed with `spec.iterations fail` and counts toward the budget. The auditor runs during the loop
   only every `audit_every` completed iterations (default 15), enforced by the guard. When due,
   the guard refuses the next planner or coding-agent launch until the session records an audit
-  result or outer-planner handoff in `synthesis/audit/completed.json` (`finished_iterations`), or
-  `stamp-audit` records accepted coverage in `completeness.json`. An unresolved result releases the
-  schedule for outer-loop repair but cannot satisfy release verification. An auditor launch alone
+  success or diagnosed implementation blocker in `synthesis/audit/completed.json`
+  (`finished_iterations`), or `stamp-audit` records accepted coverage in `completeness.json`.
+  An implementation blocker binds the structured feedback and its verifier diagnostic by hash;
+  it releases the schedule for repair but cannot satisfy release verification. Incomplete,
+  unsupported, and tool-error results, review checkpoints, and generic feedback keep proof
+  search in the current audit. Legacy failure/handoff records do not advance the schedule. An auditor launch alone
   does not advance the schedule; interrupted audits can be retried. Phase 3 reviews always run. Decisions go to
   `<run>/loop_guard.log.jsonl`. Finished iterations, scored or failed, are in
   `synthesis/bench/iterations.json`.
@@ -243,7 +246,7 @@ separate from session directories.
 - `hooks/budget_guard.py` (Stop): during the synthesis loop the lead may not end its turn while
   fewer iterations are finished than `<run>/budget.json` (`spec.run budget`) allows, unless a
   role is still working (waiting for it is allowed; Claude Code wakes the lead when it ends),
-  `spec.run pause` asked for one stop (kept afterwards as `pause.<time>.json`), the run is done,
+  `spec.run pause` is active (archived as `pause.<time>.json` by explicit `spec.run resume`), the run is done,
   or it has already refused five times without a new checkpoint. Every decision is logged to
   `<run>/budget_guard.log.jsonl`.
 - `hooks/history_guard.py` (PreToolUse): agents may not delete, move, or overwrite the knowledge

@@ -1,0 +1,5 @@
+{
+  "source": "/Users/kaiwenzheng/specfirst/outputs/experiments/db-verus/.skydiscover/db-verus/synthesis/baselines/node_locked_bptree/lib.rs",
+  "sha256": "135d1fb430359eb5b9088fc4a72ec5e55d954998e17c00c717bbab025f2772e7",
+  "note": "Preserved implementation and test sources before removing legacy runs. No scores, audit results or iteration state imported."
+}

@@ -40,7 +40,23 @@ contracts to be checked, no unresolved preparation issues, unchanged generated i
 build, and successful whole-crate verification. A macro-generated target that cannot yet be
 annotated is still attempted, but cannot be declared proved merely because Verus exits zero.
 
-Limits are `max_attempts` (default 10), `max_stalled` (3), `timeout_secs` (120), and `rlimit` (10).
+For a specification that exports a contract macro, an obligation can instead use
+`{"id": "db_get", "function": "Database::get", "macro": "impl_db"}`. This uses the complete
+contract from the frozen macro, without `requires`/`ensures` overrides. The supported binding
+form is an unconditional, unattributed crate-root `crate::impl_db! { impl Database {
+get(db, key, lp) { ... } ... } }` invocation. Verus expands the original macro from the appended
+`__audit_spec` module. Proof overlays can annotate its method bodies. Other macro forms still
+reach Verus but cannot be accepted without a resolved contract binding. See
+`experiments/db-verus/README.md` for a full performance experiment using atomic contracts.
+Macros resolve some identifiers at their call site. Use top-level `macro_imports` in verus.json
+to bind these names explicitly, e.g. `{"DatabaseState": "crate::__audit_spec::DatabaseState"}`.
+Paths may refer to the frozen model, vstd, or std. The runner appends these imports to the entry;
+shadowing definitions become compiler errors. The evaluator build must use the same bindings.
+
+Strategy review triggers are `attempts_per_review` (default 10) and `max_stalled` (3).
+`max_attempts` is accepted as a legacy alias for the review interval, including existing frozen
+sessions; it no longer caps total proof search. Per-invocation limits remain `timeout_secs` (120)
+and `rlimit` (10).
 Install Verus separately; set `SKYDISCOVER_VERUS` if it is not on PATH. Z3 must be available through
 the Verus installation, PATH, or `VERUS_Z3_PATH`. The runner pins the verifier version and installed
 verifier, library, and solver hashes. It controls verification flags, including `--no-cheating`,
@@ -88,31 +104,101 @@ python3 -m skydiscover.synthesize.spec.checkpoint stamp-audit <run>
 `workflow/scripts/run_verus.py --run <run>` performs one attempt; `--replay` checks accepted evidence
 again without consuming proof-search budget. Use the installed scripts path outside this directory.
 
-Permitted overlays insert balanced proof blocks, loop annotations, fresh ghost bindings, or fresh
-helper proof functions. They cannot remove or replace source tokens. Verification source is
+Permitted overlays insert balanced proof blocks, loop annotations, fresh ghost bindings, fresh
+helper proof functions, or checked helper postconditions. They cannot remove or replace source tokens. Verification source is
 regenerated from frozen inputs on every check and replay; editing generated files cannot change
 the proof that gets accepted.
 
+Use `kind: "helper_ensures"` at an executable helper's opening body brace to add, for example,
+`ensures audit_result.0 <= keys.len(), audit_result.1 ==> audit_result.0 < keys.len(),`.
+The adapter names an unnamed return `audit_result` using inserted ghost syntax; an existing
+named return keeps its original name. The helper body must prove its postcondition during
+whole-target verification. This supports modular proofs without editing executable code.
+Existing contracts, authoritative obligation functions, preconditions, and executable bodies
+cannot be changed by this insertion. An incorrect summary fails verification.
+
+Proof overlays support the complete public atomic-update and invariant proof macro API
+of Verus commit `8dea4a2196ebf99449fe2f141a2fb30acae3f17c`:
+
+| Module | Macro | Behavior |
+|---|---|---|
+| `vstd::atomic` | `open_atomic_update_in_proof!` | Commits the update, wrapping the body's tracked value in `Commit` |
+| `vstd::atomic` | `try_open_atomic_update_in_proof!` | Takes a body returning `Tracked<Y>` and returns `Tracked<Result<(), AtomicUpdate<...>>>`; an abort returns ownership of the update |
+| `vstd::atomic` | `peek_atomic_update_in_proof!` | Wraps the body's tracked value in `Err`, checks the abort postcondition, and returns the tracked update for later reuse |
+| `vstd::invariant` | `open_atomic_invariant_in_proof!` | Opens and restores an atomic invariant, consuming an existing credit |
+| `vstd::invariant` | `open_local_invariant_in_proof!` | Opens and restores a local invariant, consuming an existing credit |
+
+Calls may be unqualified, module-qualified, or crate-root-qualified (`vstd::macro_name!`),
+with an optional leading `::` on qualified paths. Raw identifiers are also supported.
+The adapter checks the entire payload, including nested calls, and binds each macro to
+the pinned vstd through an explicit crate alias. Candidate macros cannot replace these
+bindings; collisions with reserved adapter names are compiler errors.
+
+The `open` and `peek` compatibility wrappers work around this revision's missing
+`au_commit_wrap_proof`, `au_abort_wrap_proof`, and `au_abort_unwrap_proof` helpers using
+the real `try_open_atomic_update_in_proof!`. They preserve raw payload tokens for Verus
+syntax such as `@`, `@@`, and `let tracked`. For example, a result-valued atomic contract
+can abort and then commit in the same proof:
+
+```rust
+let tracked again = peek_atomic_update_in_proof!(lp, state => { state });
+let tracked outcome = try_open_atomic_update_in_proof!(again, state => {
+    Tracked::new(Result::<int, int>::Ok(state))
+});
+assert(outcome@ is Ok);
+```
+
+Invariant calls use `macro!(credit => &inv => inner => { ... })`. The credit must already
+exist; creating it requires an executable call outside the proof overlay. Verus checks
+the atomic postconditions, invariant restoration and masks, linear resource use, and
+proof erasure. The adapter introduces no assumptions or unchecked proof functions.
+Executable and internal expansion macros remain unavailable in proof overlays, as do
+other macros, attributes, imports, assumptions, and executable declarations.
+
+The API registry lives in `spec/proof_source.py`. To check its coverage against an upstream
+source checkout or extracted archive, set `SKYDISCOVER_VERUS_SOURCE` to that directory and
+run `pytest tests/spec/test_atomic_proof_api.py`. The coverage test scans all of vstd for
+public proof-mode macro definitions; integration tests in `test_proof.py` exercise all five
+macros with the real verifier, including rejection and replay cases.
+
 ## Results and handoffs
 
-`status` reports the current outcome, directory, budget usage, and next action. Attempts retain
+`status` reports the current outcome, directory, attempt count, and next action. Attempts retain
 their generated source and raw diagnostics. Unchanged failed overlays cannot be repeated. After
-the no-progress limit the proof planner must revise its plan; restarting does not reset the total
-budget. An interrupted attempt consumes its reserved slot.
+the no-progress limit or review interval the proof planner must revise its plan and continue
+the same audit; restarting never resets attempt history. An interrupted attempt remains recorded.
+Proof search continues until success or a diagnosed necessary implementation change.
 
 An unsupported result identifies a specific diagnostic, not a verdict that unsafe code as a class
 is unprovable. An incomplete proof is not a confirmed defect. Missing tools and stale inputs block
 acceptance. A compilation blocker affects this whole target; independent targets must be audited
 separately rather than silently excluding a failing module.
 
-Return a versioned request through `spec.proof feedback <run> --owner planner --reason "..."`, or
-use owner `spec-builder` for spec questions. The auditor hands it to the lead, which invokes the
-main planner to update the main plan. Proof workers own only the proof plan and overlay. Code or
-spec changes create new sessions.
+Generic `spec.proof feedback <run> --owner planner|spec-builder --reason "..."` records a request
+without releasing the next implementation round. Operational and spec issues must be resolved
+within this audit or explicitly paused for resolution.
 
-An audit result or explicit outer-planner handoff records scheduling completion in
-`audit/completed.json`. This lets the main loop repair an unresolved candidate. It does not grant
-correctness coverage: only accepted evidence can produce the release audit stamp.
+For a necessary implementation change, the auditor writes a blocker file, for example:
+
+```json
+{
+  "diagnostic": "attempts/0004/verification/diagnostics.txt",
+  "implementation_change": "Return the computed counter instead of the literal zero.",
+  "proof_only_analysis": "The n=1 execution returns 0. Loop-invariant repair cannot change that return value."
+}
+```
+
+Then run `spec.proof feedback <run> --owner planner --reason "wrong return expression"
+--blocker <file.json>`. Cite the latest diagnostic and explain the attempted proof strategies,
+specific required change, and why proof-only work cannot resolve it. The runner validates and
+hash-binds the diagnostic and feedback; assessing necessity remains the auditor's responsibility.
+The lead hands this evidence to the main planner for redesign in the next round. Proof workers
+own only the proof plan and overlay. Changed code or specs require new frozen sessions.
+
+Only success or a structured implementation blocker records scheduling completion in
+`audit/completed.json`. Failed checks, timeouts, unsupported results, and legacy generic handoffs
+cannot release the outer loop. A blocker grants no correctness coverage: only accepted evidence
+can produce the release audit stamp.
 
 Test-mode auditing also starts a frozen session and calls `finish-test` before stamping. The
 ordinary suite and defect checks still apply. New runs declare `audit_mode`; legacy runs without

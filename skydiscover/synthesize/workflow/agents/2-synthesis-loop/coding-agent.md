@@ -40,7 +40,10 @@ Run one iteration, then exit.
    files under Inputs are the run's record of them.
    First iteration only (bootstrap mode): if the interface and benchmark do not exist yet, build
    the parts you own from the spec and `skeleton.json`: the interface (entry symbols) and the
-   benchmark harness (it scores performance, never correctness). The trusted reference and the
+   benchmark harness (it scores performance, never correctness). Preserve any supplied working
+   implementation during bootstrap; a missing harness is not a reason to replace it. Make later
+   implementation changes according to the planner's brief, and leave the frozen baseline unchanged.
+   The trusted reference and the
    tests come from `evaluator` workers in correctness mode, never from you: the role that defines
    "correct" is never the optimizing role.
 2. **Pick one well-scoped change**: the brief's next step, aimed at the dominant lever in the

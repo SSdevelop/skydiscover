@@ -162,7 +162,7 @@ def test_the_auditor_runs_every_n_iterations_and_always_in_phase_3(
     ]
 
 
-def test_proof_handoff_releases_schedule_without_granting_coverage(
+def test_generic_proof_handoff_keeps_current_audit_open(
     tmp_path, loop_guard, monkeypatch
 ):
     from skydiscover.synthesize.spec import proof
@@ -179,10 +179,21 @@ def test_proof_handoff_releases_schedule_without_granting_coverage(
     assert proof.start(run.path)["status"] == "blocked"  # missing frozen Verus spec
     assert "audit is due" in loop_guard.decide(planner)
     proof.feedback(run.path, "spec-builder", "supply the required formal contract")
-    assert loop_guard.decide(planner) is None
+    assert "audit is due" in loop_guard.decide(planner)
     with pytest.raises(proof.ProofError):
         checkpoint.stamp_audit(run.path, [])
     assert not run.completeness.exists()
+
+
+@pytest.mark.parametrize("status", ["incomplete", "unsupported", "blocked", "tool_error", "handoff",
+                                    "implementation_blocked"])
+def test_legacy_failure_or_unbacked_blocker_does_not_release_schedule(tmp_path, loop_guard, status):
+    run = _run(tmp_path)
+    run.audit.mkdir(parents=True, exist_ok=True)
+    (run.audit / "completed.json").write_text(json.dumps({
+        "session": "legacy", "bindings": {}, "finished_iterations": 1, "status": status,
+    }))
+    assert loop_guard.last_audit_finished(run.path, 1) == 0
 
 
 def test_due_audit_blocks_next_iteration_until_stamped(tmp_path, loop_guard, monkeypatch):

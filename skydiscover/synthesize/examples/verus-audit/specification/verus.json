@@ -9,7 +9,7 @@
       "ensures": "spec::counted(n, result)"
     }
   ],
-  "max_attempts": 6,
+  "attempts_per_review": 6,
   "max_stalled": 3,
   "timeout_secs": 60,
   "rlimit": 10

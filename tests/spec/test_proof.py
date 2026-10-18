@@ -13,6 +13,419 @@ from skydiscover.synthesize.spec.proof_source import SourceError, apply_overlay,
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "skydiscover/synthesize/examples/verus-audit"
 
+MACRO_SPEC = """
+use vstd::prelude::*;
+#[macro_export]
+macro_rules! audit_counter {
+    (impl $ty:ty { count($n:ident) $body:block }) => {
+        verus! { impl $ty {
+            pub fn count($n: u64) -> (result: u64) ensures result == $n, $body
+        } }
+    };
+}
+"""
+
+
+def macro_candidate(run, source):
+    (run.impl / "counter.rs").write_text(source)
+    (run.specification / "contract.rs").write_text(MACRO_SPEC)
+    cfg = json.loads(run.verus_config.read_text())
+    cfg["obligations"] = [{"id": "count", "function": "Counter::count", "macro": "audit_counter"}]
+    run.verus_config.write_text(json.dumps(cfg))
+
+
+def test_frozen_macro_contract_accepts_proof_overlay_and_replays(run, verus):
+    macro_candidate(
+        run,
+        """
+use vstd::prelude::*;
+verus! { pub struct Counter {} }
+crate::audit_counter! { impl Counter { count(n) { verus_exec_expr! { {
+    let mut i = 0u64;
+    while i < n { i = i + 1; }
+    i
+} } } } }
+""",
+    )
+    assert proof.start(run.path)["status"] == "ready"
+    first = proof.check(run.path)
+    assert first["status"] == "incomplete", first
+    invariant(run)
+    passed = proof.check(run.path)
+    assert passed["status"] == "verified", passed
+    assert proof.replay(run.path)["obligations"] == ["count"]
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        "#[cfg(any())] crate::audit_counter! { impl Counter { count(n) { 0 } } }",
+        "macro_rules! unused { () => { crate::audit_counter! { impl Counter { count(n) { 0 } } } } }",
+    ],
+)
+def test_inactive_macro_cannot_supply_contract_coverage(run, verus, hidden):
+    macro_candidate(
+        run,
+        """
+use vstd::prelude::*;
+verus! { pub struct Counter {} impl Counter { pub fn count(n: u64) -> u64 { 0 } } }
+""" + hidden,
+    )
+    assert proof.start(run.path)["status"] == "ready"
+    result = proof.check(run.path)
+    assert result["status"] != "verified"
+    session, _ = proof._session(run)
+    attempts = list((session / "attempts").glob("*/verification/preparation.json"))
+    assert attempts and json.loads(attempts[0].read_text())["issues"]
+
+
+def test_macro_contract_cannot_be_overridden(run):
+    macro_candidate(run, "use vstd::prelude::*; verus! {}")
+    cfg = json.loads(run.verus_config.read_text())
+    cfg["obligations"][0]["ensures"] = "true"
+    run.verus_config.write_text(json.dumps(cfg))
+    with pytest.raises(proof.ProofError, match="complete contract"):
+        proof._config(run, proof.route(run.path))
+
+
+def test_macro_call_site_cannot_shadow_frozen_model_predicate(run, verus):
+    macro_candidate(
+        run,
+        """
+use vstd::prelude::*;
+verus! {
+pub struct Counter {}
+pub open spec fn correct(result: u64, n: u64) -> bool { true }
+}
+crate::audit_counter! { impl Counter { count(n) { 0 } } }
+""",
+    )
+    spec = MACRO_SPEC.replace("result == $n", "correct(result, $n)")
+    spec += "\nverus! { pub open spec fn correct(result: u64, n: u64) -> bool { result == n } }\n"
+    (run.specification / "contract.rs").write_text(spec)
+    cfg = json.loads(run.verus_config.read_text())
+    cfg["macro_imports"] = {"correct": "crate::__audit_spec::correct"}
+    run.verus_config.write_text(json.dumps(cfg))
+    assert proof.start(run.path)["status"] == "ready"
+    assert proof.check(run.path)["status"] != "verified"
+    session, _ = proof._session(run)
+    diagnostics = next((session / "attempts").glob("*/verification/diagnostics.txt")).read_text()
+    assert "defined multiple times" in diagnostics
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "open_atomic_update_in_proof",
+        "vstd::atomic::open_atomic_update_in_proof",
+        "::vstd::atomic::open_atomic_update_in_proof",
+        "r#vstd::atomic::r#open_atomic_update_in_proof",
+    ],
+)
+def test_atomic_proof_macro_is_bound_without_changing_candidate_tokens(path):
+    base = "verus! { fn f() { let x = 1; } }"
+    before = next(i for i, t in enumerate(tokens(base)) if t.text == "let")
+    text = f"proof {{ {path}!(lp, state => {{ state }}); }}"
+    prepared = apply_overlay(
+        base, {"insertions": [{"before": before, "kind": "proof", "text": text}]}
+    )
+    bound = "proof { crate::__audit_open_atomic_update_in_proof!(lp, state => { state }); }"
+    assert prepared.replace("\n" + bound + "\n", "") == base
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "other::atomic::open_atomic_update_in_proof!(lp, state => { state });",
+        "fake::vstd::atomic::open_atomic_update_in_proof!(lp, state => { state });",
+        "vstd::atomic::open_atomic_update!(lp, state => { state });",
+        "vstd::atomic::try_open_atomic_update_internal!(lp, state => { state });",
+        "open_atomic_update_in_proof!(lp, state => { assume(false); state });",
+        "open_atomic_update_in_proof!(lp, state => { r#admit(); state });",
+        "open_atomic_update_in_proof!(lp, state => { evil!(); state });",
+        "open_atomic_update_in_proof!(lp, state => { #[verifier::external_body] proof fn f() {} state });",
+        "open_atomic_update_in_proof!(lp, state => { unsafe { f(); } state });",
+        "open_atomic_update_in_proof!(lp, state => { exec fn f() {} state });",
+        "open_atomic_update_in_proof!(lp, state => { use other::f; state });",
+        "open_atomic_update_in_proof!(lp, state => { macro_rules! f { () => {} } state });",
+    ],
+)
+def test_atomic_macro_does_not_hide_unsupported_proof_constructs(text):
+    base = "verus! { fn f() { let x = 1; } }"
+    before = next(i for i, t in enumerate(tokens(base)) if t.text == "let")
+    with pytest.raises(SourceError):
+        apply_overlay(
+            base,
+            {"insertions": [{"before": before, "kind": "proof", "text": "proof {" + text + "}"}]},
+        )
+
+
+def atomic_candidate(
+    run, *, body="state", shadow="", twice=False, proof_text=None, result_contract=False
+):
+    macro_candidate(
+        run,
+        "use vstd::prelude::*;\n"
+        + shadow
+        + """
+verus! { pub struct Counter {} }
+crate::audit_counter! { impl Counter { count(n, lp) { verus_exec_expr! { {
+    let mut result = n;
+    result
+} } } } }
+""",
+    )
+    (run.specification / "contract.rs").write_text(
+        """
+use vstd::prelude::*;
+#[macro_export]
+macro_rules! audit_counter {
+    (impl $ty:ty { count($n:ident, $lp:ident) $body:block }) => {
+        verus! { impl $ty {
+            pub fn count($n: u64) -> (result: u64)
+                atomically ($lp) {
+                    (state: int) -> (post: vstd::atomic::Commit<int>),
+                    requires state == $n,
+                    ensures post@ == state,
+                    outer_mask any,
+                    inner_mask none,
+                },
+                ensures result == state,
+            $body
+        } }
+    };
+}
+"""
+    )
+    if result_contract:
+        spec = run.specification / "contract.rs"
+        spec.write_text(
+            spec.read_text()
+            .replace("vstd::atomic::Commit<int>", "Result<int, int>")
+            .replace("post@ == state", "match post { Ok(v) => v == state, Err(v) => v == state }")
+        )
+    assert proof.start(run.path)["status"] == "ready"
+    path, source = overlay_path(run)
+    # The final result expression follows the initializer's semicolon.
+    ts = tokens(source)
+    before = next(i for i, t in enumerate(ts) if t.text == ";" and i and ts[i - 1].text == "n") + 1
+    call = "open_atomic_update_in_proof!(lp, state => { " + body + " });"
+    if proof_text is None:
+        proof_text = call + (call if twice else "")
+    path.write_text(
+        json.dumps(
+            {
+                "insertions": [
+                    {
+                        "before": before,
+                        "kind": "proof",
+                        "text": "proof { " + proof_text + " }",
+                    }
+                ]
+            }
+        )
+    )
+
+
+def test_atomic_proof_overlay_verifies_and_replays(run, verus):
+    atomic_candidate(run)
+    path, _ = overlay_path(run)
+    overlay = path.read_text()
+    path.write_text('{"insertions": []}')
+    assert proof.check(run.path)["status"] == "incomplete"
+    path.write_text(overlay)
+    result = proof.check(run.path)
+    assert result["status"] == "verified", result
+    assert proof.replay(run.path)["obligations"] == ["count"]
+
+
+def test_atomic_proof_macro_preserves_verus_payload_syntax(run, verus):
+    atomic_candidate(
+        run,
+        body="let tracked value = vstd::atomic::Commit(state); "
+        "let tracked wrapped = vstd::atomic::Commit(value); "
+        "assert(wrapped@@ == state); wrapped.get().get()",
+    )
+    result = proof.check(run.path)
+    assert result["status"] == "verified", result
+    assert proof.replay(run.path)["obligations"] == ["count"]
+
+
+def test_atomic_proof_macro_cannot_change_executable_state(run, verus):
+    atomic_candidate(run, body="result = 0; state")
+    result = proof.check(run.path)
+    assert result["status"] != "verified", result
+    session, _ = proof._session(run)
+    diagnostics = next((session / "attempts").glob("*/verification/diagnostics.txt")).read_text()
+    assert "exec" in diagnostics and "proof" in diagnostics
+
+
+def test_candidate_macro_shadow_cannot_replace_atomic_proof_macro(run, verus):
+    # Expanding this lookalike would fail compilation. The trusted absolute binding
+    # must instead resolve to the real vstd macro, even for unqualified overlay text.
+    atomic_candidate(
+        run,
+        shadow='macro_rules! open_atomic_update_in_proof { ($($t:tt)*) => { '
+        'compile_error!("shadow invoked"); }; }',
+    )
+    result = proof.check(run.path)
+    assert result["status"] == "verified", result
+
+
+@pytest.mark.parametrize(
+    "shadow",
+    [
+        "mod __audit_atomic_vstd {}",
+        "mod __audit_atomic_core {}",
+        "#[macro_export] macro_rules! __audit_open_atomic_update_in_proof { ($($t:tt)*) => {}; }",
+        "#[macro_export] macro_rules! __audit_peek_atomic_update_in_proof { ($($t:tt)*) => {}; }",
+    ],
+)
+def test_candidate_cannot_replace_atomic_adapter_bindings(run, verus, shadow):
+    atomic_candidate(run, shadow=shadow)
+    result = proof.check(run.path)
+    assert result["status"] != "verified", result
+    session, _ = proof._session(run)
+    diagnostics = next((session / "attempts").glob("*/verification/diagnostics.txt")).read_text()
+    assert "defined multiple times" in diagnostics
+
+
+def test_atomic_proof_macro_checks_update_postcondition(run, verus):
+    atomic_candidate(run, body="state + 1")
+    result = proof.check(run.path)
+    assert result["status"] == "incomplete", result
+    session, _ = proof._session(run)
+    diagnostics = next((session / "attempts").glob("*/verification/diagnostics.txt")).read_text()
+    assert "postcondition" in diagnostics
+
+
+def test_atomic_proof_macro_cannot_consume_update_twice(run, verus):
+    atomic_candidate(run, twice=True)
+    result = proof.check(run.path)
+    assert result["status"] == "incomplete", result
+    session, _ = proof._session(run)
+    diagnostics = next((session / "attempts").glob("*/verification/diagnostics.txt")).read_text()
+    assert "moved value" in diagnostics
+
+
+@pytest.mark.parametrize("peek", [False, True], ids=["try_abort", "peek"])
+@pytest.mark.parametrize("bad_abort", [False, True], ids=["valid", "bad_postcondition"])
+def test_atomic_abort_then_commit(run, verus, peek, bad_abort):
+    value = "state + 1" if bad_abort else """{
+        let tracked value = vstd::atomic::Commit(vstd::atomic::Commit(state));
+        assert(value@@ == state); value.get().get()
+    }"""
+    abort = (
+        "let tracked again = peek_atomic_update_in_proof!(lp, state => { " + value + " });"
+        if peek else
+        "let tracked aborted = try_open_atomic_update_in_proof!(lp, state => { "
+        "Tracked::new(Result::<int, int>::Err(" + value + ")) });"
+        "assert(aborted@ is Err); let tracked again = aborted.get().tracked_unwrap_err();"
+    )
+    atomic_candidate(run, result_contract=True, proof_text=abort + """
+        assert(again == lp);
+        let tracked committed = try_open_atomic_update_in_proof!(again, state => {
+            let tracked value = vstd::atomic::Commit(state);
+            assert(value@ == state);
+            Tracked::new(Result::<int, int>::Ok(value.get()))
+        });
+        assert(committed@ is Ok);
+    """)
+    result = proof.check(run.path)
+    if bad_abort:
+        assert result["status"] == "incomplete", result
+        session, _ = proof._session(run)
+        diagnostics = next((session / "attempts").glob("*/verification/diagnostics.txt")).read_text()
+        assert "postcondition" in diagnostics
+    else:
+        assert result["status"] == "verified", result
+        assert proof.replay(run.path)["obligations"] == ["count"]
+
+
+@pytest.mark.parametrize("peek", [False, True], ids=["try_open", "peek"])
+@pytest.mark.parametrize("case", ["shadow", "reuse_update", "exec_write"])
+def test_new_atomic_macros_preserve_proof_boundaries(run, verus, peek, case):
+    name = "peek_atomic_update_in_proof" if peek else "try_open_atomic_update_in_proof"
+    shadow = (
+        f'macro_rules! {name} {{ ($($t:tt)*) => {{ compile_error!("shadow invoked"); }}; }}'
+        if case == "shadow" else ""
+    )
+    body = ("result = 0; " if case == "exec_write" else "") + (
+        "state" if peek else "Tracked::new(Result::<int, int>::Err(state))"
+    )
+    abort = f"let tracked again = {name}!(lp, state => {{ {body} }});"
+    if not peek:
+        abort += "let tracked again = again.get().tracked_unwrap_err();"
+    target = "lp" if case == "reuse_update" else "again"
+    commit = f"""try_open_atomic_update_in_proof!({target}, state => {{
+        Tracked::new(Result::<int, int>::Ok(state))
+    }});"""
+    atomic_candidate(run, shadow=shadow, result_contract=True, proof_text=abort + commit)
+    result = proof.check(run.path)
+    if case == "shadow":
+        assert result["status"] == "verified", result
+    else:
+        assert result["status"] == "incomplete", result
+        session, _ = proof._session(run)
+        diagnostics = next((session / "attempts").glob("*/verification/diagnostics.txt")).read_text()
+        assert ("moved value" if case == "reuse_update" else "exec") in diagnostics
+
+
+@pytest.mark.parametrize("local", [False, True], ids=["atomic", "local"])
+@pytest.mark.parametrize("case", [
+    "valid", "shadow", "bad_invariant", "reuse_credit", "create_credit", "exec_write",
+])
+def test_invariant_proof_macro(run, verus, local, case):
+    inv_type = "LocalInvariant" if local else "AtomicInvariant"
+    macro = "open_local_invariant_in_proof" if local else "open_atomic_invariant_in_proof"
+    shadow = (
+        f'macro_rules! {macro} {{ ($($t:tt)*) => {{ compile_error!("shadow invoked"); }}; }}'
+        if case == "shadow" else ""
+    )
+    (run.impl / "counter.rs").write_text(shadow + """
+use vstd::prelude::*;
+use vstd::invariant::*;
+verus! {
+pub struct Predicate {}
+impl InvariantPredicate<int, int> for Predicate {
+    open spec fn inv(k: int, value: int) -> bool { value == k }
+}
+pub fn count(n: u64, Tracked(inv): Tracked<INV<int, int, Predicate>>) -> (result: u64)
+{
+    let credit_wrapper = create_open_invariant_credit();
+    let tracked credit = credit_wrapper.get();
+    let mut result = n;
+    result
+}
+}
+""".replace("INV<int", inv_type + "<int"))
+    assert proof.start(run.path)["status"] == "ready"
+    path, source = overlay_path(run)
+    ts = tokens(source)
+    before = next(i for i, t in enumerate(ts) if t.text == ";" and i and ts[i - 1].text == "n") + 1
+    body = {"bad_invariant": "inner = inner + 1;", "exec_write": "result = 0;"}.get(
+        case, "assert(inner == inv.constant());"
+    )
+    credit = "create_open_invariant_credit().get()" if case == "create_credit" else "credit"
+    call = f"{macro}!({credit} => &inv => inner => {{ {body} }});"
+    path.write_text(json.dumps({"insertions": [{
+        "before": before, "kind": "proof",
+        "text": "proof { " + call + (call if case == "reuse_credit" else "") + " }",
+    }]}))
+    result = proof.check(run.path)
+    if case in {"valid", "shadow"}:
+        assert result["status"] == "verified", result
+        assert proof.replay(run.path)["obligations"] == ["counter_returns_n"]
+    else:
+        assert result["status"] == "incomplete", result
+        session, _ = proof._session(run)
+        diagnostics = next((session / "attempts").glob("*/verification/diagnostics.txt")).read_text()
+        expected = {
+            "bad_invariant": "invariant", "reuse_credit": "moved value",
+            "exec_write": "exec", "create_credit": "exec",
+        }
+        assert expected[case] in diagnostics
+
 
 @pytest.fixture
 def run(tmp_path):
@@ -148,21 +561,37 @@ def test_workspace_cannot_replace_contracts(run, verus):
         apply_overlay(source, malicious)
 
 
-def test_budget_persists_and_identical_failed_attempts_do_not_spin(run, verus):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_review_persists_and_proof_continues_past_old_budget(run, verus, legacy):
     cfg = json.loads(run.verus_config.read_text())
-    cfg["max_attempts"] = 2
+    cfg.pop("max_attempts", None)
+    cfg.pop("attempts_per_review", None)
+    cfg["max_attempts" if legacy else "attempts_per_review"] = 2
     run.verus_config.write_text(json.dumps(cfg))
     proof.start(run.path)
+    session, manifest = proof._session(run)
+    if legacy:
+        # An already-frozen session must resume without rewriting inputs or losing accounting.
+        manifest["config"]["max_attempts"] = manifest["config"].pop("attempts_per_review")
+        manifest["manifest_hash"] = proof._hash({k: v for k, v in manifest.items() if k != "manifest_hash"})
+        proof._write(session / "manifest.json", manifest)
     assert proof.check(run.path)["status"] == "incomplete"
     with pytest.raises(proof.ProofError, match="unchanged"):
         proof.check(run.path)
     assert proof.start(run.path)["attempts"] == 1
     invariant(run, "invariant true,")
-    assert proof.check(run.path)["attempts"] == 2
+    second = proof.check(run.path)
+    assert second["attempts"] == 2 and second["next_action"] == "revise proof strategy"
+    assert not (run.audit / "completed.json").exists()
+    assert proof.start(run.path)["attempts"] == 2
     invariant(run)
-    exhausted = proof.check(run.path)
-    assert exhausted["status"] == "incomplete" and "exhausted" in exhausted["message"]
-    assert exhausted["attempts"] == 2
+    with pytest.raises(proof.ProofError, match="review due"):
+        proof.check(run.path)
+    (session / "proof/plan.md").write_text("Use a bounded counter invariant and decreasing measure.")
+    passed = proof.check(run.path)
+    assert passed["status"] == "verified" and passed["attempts"] == 3
+    assert passed["reviewed_at_attempt"] == 2
+    assert proof.completion_allows_planning(run.path, proof._read(run.audit / "completed.json"))
 
 
 def test_feedback_preserves_main_plan_and_carries_versioned_diagnostics(run, verus):
@@ -174,6 +603,7 @@ def test_feedback_preserves_main_plan_and_carries_versioned_diagnostics(run, ver
     assert result["classification"] == "request"
     assert not result["main_plan_updated"]
     assert run.plan.read_text() == "original design\n"
+    assert not (run.audit / "completed.json").exists()
 
 
 def test_unsafe_is_not_automatically_rejected():
@@ -195,6 +625,65 @@ def configure_target(run, files, entry, function, ensures, obligation_file=None)
         obligation["file"] = obligation_file
     cfg.update(entry=entry, obligations=[obligation])
     run.verus_config.write_text(json.dumps(cfg))
+
+
+@pytest.mark.parametrize("tuple_return", [False, True])
+def test_checked_helper_summary_exposes_result_without_changing_execution(run, verus, tuple_return):
+    return_type = "(u64, bool)" if tuple_return else "u64"
+    value = "(n, true)" if tuple_return else "n"
+    access = ".0" if tuple_return else ""
+    configure_target(run, {"lib.rs": f"""
+use vstd::prelude::*;
+verus! {{
+fn helper(n: u64) -> {return_type} {{ {value} }}
+pub fn count(n: u64) -> u64 {{ helper(n){access} }}
+}}
+"""}, "lib.rs", "count", "result == n")
+    proof.start(run.path)
+    assert proof.check(run.path)["status"] == "incomplete"
+    frozen = proof._bindings(run)
+    path, source = overlay_path(run)
+    from skydiscover.synthesize.spec.proof_source import functions
+
+    before = functions(source)["helper"][1]
+    def summary(expression):
+        path.write_text(json.dumps({"insertions": [{
+            "before": before, "kind": "helper_ensures", "text": "ensures " + expression + ",",
+        }]}))
+
+    # A summary is checked against its actual body, never assumed.
+    summary(f"audit_result{access} != n")
+    assert proof.check(run.path)["status"] == "incomplete"
+    summary(f"audit_result{access} == n")
+    assert proof.check(run.path)["status"] == "verified"
+    assert proof.replay(run.path)["obligations"] == ["required"]
+    assert proof._bindings(run) == frozen
+
+
+@pytest.mark.parametrize("text", ["requires false, ensures true,", "ensures true, requires false,",
+                                 "ensures true, { return 0; }", "ensures assume(false),"])
+def test_helper_summary_cannot_add_preconditions_or_replace_code(text):
+    from skydiscover.synthesize.spec.proof_source import functions
+
+    source = "verus! { fn helper(n: u64) -> u64 { n } }"
+    with pytest.raises(SourceError):
+        apply_overlay(source, {"insertions": [{
+            "before": functions(source)["helper"][1], "kind": "helper_ensures", "text": text,
+        }]})
+
+
+@pytest.mark.parametrize("contract", ["", "ensures result == n,"])
+def test_helper_summary_cannot_change_frozen_contract(contract):
+    from skydiscover.synthesize.spec.proof_source import functions
+
+    source = f"verus! {{ fn count(n: u64) -> (result: u64) {contract} {{ n }} }}"
+    overlay = {"insertions": [{"before": functions(source)["count"][1],
+                               "kind": "helper_ensures", "text": "ensures true,"}]}
+    with pytest.raises(SourceError, match="authoritative"):
+        apply_overlay(source, overlay, protected_functions=("count",))
+    if contract:
+        with pytest.raises(SourceError, match="existing function contract"):
+            apply_overlay(source, overlay)
 
 
 @pytest.mark.parametrize(
@@ -377,6 +866,10 @@ def test_verifier_cannot_certify_modified_generated_inputs(run, verus, monkeypat
 
 
 def test_wrong_implementation_returns_to_outer_planner(run, verus):
+    from skydiscover.synthesize.spec import iterations
+    from skydiscover.synthesize.workflow.hooks.loop_guard import last_audit_finished
+
+    iterations.close(run.path, "failed", reason="counterexample")
     source = run.impl / "counter.rs"
     source.write_text(source.read_text().replace("    i\n", "    0\n"))
     proof.start(run.path)
@@ -384,11 +877,47 @@ def test_wrong_implementation_returns_to_outer_planner(run, verus):
     result = proof.check(run.path)
     assert result["status"] == "incomplete"
     frozen = proof._bindings(run)
-    request = proof.feedback(run.path, "planner", "return value does not meet counter_returns_n")
+    blocker = {
+        "diagnostic": result["diagnostics"],
+        "implementation_change": "Return the counter i instead of the literal zero.",
+        "proof_only_analysis": "For n=1 the frozen function returns 0; no invariant or lemma "
+                               "can establish result==n without changing that return expression.",
+    }
+    request = proof.feedback(run.path, "planner", "return value does not meet counter_returns_n",
+                             blocker=blocker)
     assert request["result"]["obligations"][0]["status"] == "unresolved"
+    assert request["classification"] == "implementation_blocker"
+    completed = proof._read(run.audit / "completed.json")
+    assert proof.completion_allows_planning(run.path, completed)
+    assert last_audit_finished(run.path, 1) == 1
+    for field in blocker:
+        with pytest.raises(proof.ProofError, match="blocker|diagnostic"):
+            proof.feedback(run.path, "planner", "incomplete blocker",
+                           blocker={**blocker, field: ""})
+    with pytest.raises(proof.ProofError, match="latest attempt"):
+        proof.feedback(run.path, "planner", "wrong diagnostic",
+                       blocker={**blocker, "diagnostic": "../diagnostics.txt"})
+    with pytest.raises(proof.ProofError, match="planner owner"):
+        proof.feedback(run.path, "spec-builder", "spec ambiguity", blocker=blocker)
     assert proof._bindings(run) == frozen
     with pytest.raises(proof.ProofError):
         checkpoint.stamp_audit(run.path, [])
+    session, _ = proof._session(run)
+    (session / result["diagnostics"]).write_text("replaced diagnostics")
+    assert not proof.completion_allows_planning(run.path, completed)
+    assert last_audit_finished(run.path, 1) == 0
+
+
+@pytest.mark.parametrize("outcome", ["incomplete", "unsupported", "blocked", "tool_error", "invalid"])
+def test_unsuccessful_checks_never_release_outer_loop(run, verus, monkeypatch, outcome):
+    proof.start(run.path)
+    monkeypatch.setattr(proof, "_verify", lambda *args: {
+        "status": outcome, "message": "diagnose this failure", "verified_count": 0,
+    })
+    assert proof.check(run.path)["status"] == outcome
+    assert not (run.audit / "completed.json").exists()
+    proof.feedback(run.path, "planner", "still working")
+    assert not (run.audit / "completed.json").exists()
 
 
 def test_changed_toolchain_cannot_reuse_or_replace_session_binding(run, verus, monkeypatch):

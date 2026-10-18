@@ -7,7 +7,8 @@
     run budget <run_dir> <iterations> [--attempts A] [--audit-every M]
                                                   record the iteration budget the user chose (Step 4),
                                                   the coding attempts per iteration, the audit interval
-    run pause  <run_dir> --reason "<question>"    let the lead end its next turn to ask the user
+    run pause  <run_dir> --reason "<question>"    pause until explicitly resumed
+    run resume <run_dir>                         archive the pause and continue the saved run
 
 The domain names the knowledge base folder (.skydiscover/kb/<domain>/); by default it is the `domain:` line
 of the run's task.md front matter.
@@ -1106,8 +1107,7 @@ def main_budget(argv: Optional[List[str]] = None) -> int:
 
 
 def main_pause(argv: Optional[List[str]] = None) -> int:
-    """Let the lead end its next turn before the budget is spent, to ask the user something. One
-    stop only; hooks/budget_guard.py then keeps the request as pause.<time>.json."""
+    """Pause before the budget is spent; all Stop hooks honor it until explicit resume."""
     ap = argparse.ArgumentParser(prog="run pause", description=main_pause.__doc__)
     ap.add_argument("run_dir")
     ap.add_argument("--reason", required=True, help="what the lead needs from the user")
@@ -1123,6 +1123,25 @@ def main_pause(argv: Optional[List[str]] = None) -> int:
     return 0
 
 
+def main_resume(argv: Optional[List[str]] = None) -> int:
+    """Resume saved work without resetting iterations, proof attempts, or frozen inputs."""
+    ap = argparse.ArgumentParser(prog="run resume", description=main_resume.__doc__)
+    ap.add_argument("run_dir")
+    args = ap.parse_args(argv)
+    run = Run(args.run_dir)
+    if not run.task.is_file():
+        print(f"run resume: {run.path} is not a run directory (no task.md)", file=sys.stderr)
+        return 2
+    pause = run.path / "pause.json"
+    if pause.exists():
+        from datetime import datetime, timezone
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        pause.rename(run.path / f"pause.{stamp}.json")
+    print("resume: saved run may continue")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == "check":
@@ -1133,10 +1152,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return main_budget(args[1:])
     if args and args[0] == "pause":
         return main_pause(args[1:])
+    if args and args[0] == "resume":
+        return main_resume(args[1:])
     usage = (
         "usage: run check <run_dir> | run finish <run_dir> [domain] [--export-to <path>] "
         "[--delete-run] [--refresh-tests] [--production-ready] | run budget <run_dir> <iterations> "
-        "| run pause <run_dir> --reason <question>"
+        "| run pause <run_dir> --reason <question> | run resume <run_dir>"
     )
     if args and args[0] in ("-h", "--help"):
         print(usage)

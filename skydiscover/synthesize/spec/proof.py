@@ -1,4 +1,4 @@
-"""Frozen auditor sessions and the bounded Verus loop (stdlib only).
+"""Frozen auditor sessions and the persistent Verus proof loop (stdlib only).
 
 Commands: start, status, tokens, check, replay, feedback, finish-test.
 The agents write proof/overlay.json and proof/plan.md; this module owns evidence and accounting.
@@ -26,6 +26,8 @@ from .proof_source import (
     SourceError,
     apply_overlay,
     base_source,
+    macro_functions,
+    spec_attachment,
     tokens,
     verification_view,
 )
@@ -204,34 +206,58 @@ def _config(run: Run, routing: dict) -> dict:
         "spec",
         "obligations",
         "max_attempts",
+        "attempts_per_review",
         "max_stalled",
         "timeout_secs",
         "rlimit",
+        "macro_imports",
     }
     if set(cfg) - allowed:
         raise ProofError(f"unknown Verus configuration keys: {sorted(set(cfg) - allowed)}")
     spec = _relative(run.specification, cfg.get("spec", ""))
     if not spec.is_file() or spec.suffix != ".rs":
         raise ProofError("proof mode requires a Verus .rs specification file")
+    imports = cfg.get("macro_imports", {})
+    if not isinstance(imports, dict):
+        raise ProofError("macro_imports must be an object")
+    spec_attachment("spec.rs", imports)  # validate before freezing configuration
     obs = cfg.get("obligations")
     if not isinstance(obs, list) or not obs:
         raise ProofError("proof mode requires a nonempty obligations list")
     ids = set()
     for o in obs:
-        if not isinstance(o, dict) or set(o) - {"id", "function", "file", "requires", "ensures"}:
+        if not isinstance(o, dict) or set(o) - {
+            "id",
+            "function",
+            "file",
+            "requires",
+            "ensures",
+            "macro",
+        }:
             raise ProofError("invalid obligation fields")
-        if not all(
-            isinstance(o.get(k), str) and o[k].strip() for k in ("id", "function", "ensures")
-        ):
-            raise ProofError("obligations require id, function and ensures")
+        required = ("id", "function", "macro") if "macro" in o else ("id", "function", "ensures")
+        if not all(isinstance(o.get(k), str) and o[k].strip() for k in required):
+            raise ProofError("obligations require id, function and ensures (or a frozen macro)")
+        if "macro" in o:
+            if not re.fullmatch(r"[A-Za-z_]\w*", o["macro"]) or {"requires", "ensures"} & set(o):
+                raise ProofError("a macro obligation uses the frozen macro's complete contract")
+            spec_tokens = [t.text for t in tokens(spec.read_text())]
+            definition = ["#", "[", "macro_export", "]", "macro_rules", "!", o["macro"]]
+            if not any(
+                spec_tokens[j : j + len(definition)] == definition for j in range(len(spec_tokens))
+            ):
+                raise ProofError("contract macro must be exported by the frozen specification")
         if o["id"] in ids:
             raise ProofError("duplicate obligation id")
         if "file" in o:
             _relative(run.impl, o["file"])
         ids.add(o["id"])
     cfg = {**cfg, "entry": routing["entry"]}
+    if "max_attempts" in cfg and "attempts_per_review" in cfg:
+        raise ProofError("use attempts_per_review or its legacy alias max_attempts, not both")
+    cfg["attempts_per_review"] = cfg.pop("max_attempts", cfg.get("attempts_per_review", 10))
     for name, default, maximum in (
-        ("max_attempts", 10, 1000),
+        ("attempts_per_review", 10, 1000),
         ("max_stalled", 3, 100),
         ("timeout_secs", 120, 3600),
         ("rlimit", 10, 600),
@@ -414,7 +440,10 @@ def _integrity(run: Run, session: Path, manifest: dict) -> None:
             "audit is stale: specification, implementation or audit configuration changed"
         )
     if manifest["routing"]["effective"] == "proof":
-        if manifest["config"] and _config(run, manifest["routing"]) != manifest["config"]:
+        frozen_config = dict(manifest["config"])
+        if "max_attempts" in frozen_config:
+            frozen_config["attempts_per_review"] = frozen_config.pop("max_attempts")
+        if frozen_config and _config(run, manifest["routing"]) != frozen_config:
             raise ProofError("proof configuration changed")
 
 
@@ -448,7 +477,14 @@ def _views(session: Path, manifest: dict, overlay: dict) -> tuple[dict, list[str
             continue
         obligations = [o for o in cfg["obligations"] if o.get("file", cfg["entry"]) == name]
         try:
-            base = base_source(source, obligations)
+            base = base_source(source, [o for o in obligations if "macro" not in o])
+            for obligation in obligations:
+                if "macro" in obligation:
+                    sites = macro_functions(base, obligation["macro"])
+                    if obligation["function"] not in sites:
+                        raise SourceError(
+                            "cannot bind frozen macro contract: " + obligation["function"]
+                        )
         except SourceError as exc:
             # Still run the real verifier on preserved source; never pretend an unattached
             # contract was checked. The proof planner gets both adapter and Verus diagnostics.
@@ -458,7 +494,12 @@ def _views(session: Path, manifest: dict, overlay: dict) -> tuple[dict, list[str
             except SourceError:
                 base = source
         if name in by_file:
-            base = apply_overlay(base, {"insertions": by_file[name]})
+            base = apply_overlay(
+                base,
+                {"insertions": by_file[name]},
+                contract_macros=tuple({o["macro"] for o in obligations if "macro" in o}),
+                protected_functions=tuple(o["function"] for o in obligations),
+            )
         views[name] = base
     for obligation in cfg["obligations"]:
         if obligation.get("file", cfg["entry"]) not in views:
@@ -535,8 +576,8 @@ def _result(session: Path, manifest: dict, state: dict) -> dict:
     return result
 
 
-def _completed(run: Run, manifest: dict, status: str) -> None:
-    """A returned audit allows outer-loop repair; only verified evidence permits release."""
+def _completed(run: Run, manifest: dict, status: str, **details) -> None:
+    """Only accepted evidence or a diagnosed implementation blocker ends this audit."""
     from .iterations import finished
 
     _write(
@@ -546,8 +587,40 @@ def _completed(run: Run, manifest: dict, status: str) -> None:
             "bindings": manifest["bindings"],
             "status": status,
             "finished_iterations": len(finished(run.path)),
+            **details,
         },
     )
+
+
+def completion_allows_planning(run_dir: Path, record: dict) -> bool:
+    """Validate scheduling completion, including historical implementation handoffs.
+
+    Historical bindings need not match today's candidate. A blocker must still match its
+    saved feedback and diagnostic; old generic handoffs and failed checks never qualify.
+    This is scheduling evidence, not a proof or a semantic judgment of the proposed redesign.
+    """
+    if not isinstance(record, dict):
+        return False
+    if not isinstance(record.get("bindings"), dict) or not isinstance(record.get("session"), str):
+        return False
+    if record.get("status") in {"verified", "test_complete"}:
+        return True
+    if record.get("status") != "implementation_blocked":
+        return False
+    try:
+        session = _relative(Run(run_dir).audit, record["session"])
+        doc = _read(session / "feedback.json")
+        blocker = doc["blocker"]
+        return (
+            doc["classification"] == "implementation_blocker"
+            and doc["owner"] == "planner"
+            and doc["session"] == record["session"]
+            and doc["bindings"] == record["bindings"]
+            and _hash(doc) == record["feedback_hash"]
+            and _digest(_relative(session, blocker["diagnostic"])) == blocker["diagnostic_hash"]
+        )
+    except (ProofError, OSError, KeyError, TypeError):
+        return False
 
 
 def status(run_dir: Path) -> dict:
@@ -703,9 +776,7 @@ def _verify(session: Path, manifest: dict, overlay: dict, destination: Path) -> 
     spec = _relative(specification, cfg["spec"])
     entry = _relative(project, cfg["entry"])
     spec_path = os.path.relpath(spec, entry.parent)
-    entry.write_text(
-        entry.read_text() + "\n#[path = " + json.dumps(spec_path) + "] pub mod __audit_spec;\n"
-    )
+    entry.write_text(entry.read_text() + spec_attachment(spec_path, cfg.get("macro_imports", {})))
     command, expected_prefix, cargo_issues = _command(binary, project, entry, cfg, destination)
     issues.extend(cargo_issues)
     generated_digest = _digest(project)
@@ -805,24 +876,28 @@ def check(run_dir: Path) -> dict:
             for k in ("attempts", "stalled", "best_verified")
         ):
             raise ProofError("invalid proof-attempt accounting")
-        reserved = [int(p.name) for p in (session / "attempts").glob("[0-9][0-9][0-9][0-9]")]
+        reserved = [
+            int(p.name)
+            for p in (session / "attempts").glob("*")
+            if re.fullmatch(r"[0-9]{4,}", p.name)
+        ]
         if set(reserved) != set(range(1, state["attempts"] + 1)):
-            raise ProofError("attempt history and state disagree; refusing to reset the budget")
+            raise ProofError("attempt history and state disagree; refusing to reset attempt accounting")
         if state["status"] == "verified":
             return _result(session, manifest, state)
-        if state["attempts"] >= cfg["max_attempts"]:
-            state.update(
-                status="incomplete", message="proof attempt budget exhausted; return to auditor"
-            )
-            _write(session / "state.json", state)
-            _completed(run, manifest, "incomplete")
-            return _result(session, manifest, state)
+        # Old frozen sessions keep their configuration bytes and counters. Their former
+        # total cap now means a strategy-review interval, just as it does for new sessions.
+        review_every = cfg.get("attempts_per_review", cfg.get("max_attempts", 10))
+        reviewed_at = state.get("reviewed_at_attempt", 0)
+        if type(reviewed_at) is not int or not 0 <= reviewed_at <= state["attempts"]:
+            raise ProofError("invalid proof-review accounting")
         overlay = _read(session / "proof" / "overlay.json")
         plan_hash = _digest(session / "proof" / "plan.md")
-        if state["stalled"] >= cfg["max_stalled"]:
+        if state["stalled"] >= cfg["max_stalled"] or state["attempts"] - reviewed_at >= review_every:
             if plan_hash == state.get("plan_hash"):
-                raise ProofError("proof strategy stalled; the proof planner must revise plan.md")
+                raise ProofError("proof strategy review due; the proof planner must revise plan.md")
             state["stalled"] = 0
+            state["reviewed_at_attempt"] = state["attempts"]
         fingerprint = _hash(overlay)
         previous = state.get("last_overlay")
         if fingerprint == previous and state["status"] in {
@@ -844,7 +919,7 @@ def check(run_dir: Path) -> dict:
         )
         attempt = session / "attempts" / f"{state['attempts']:04d}"
         _write(attempt / "overlay.json", overlay)
-        _write(session / "state.json", state)  # reserve budget before spawning a process
+        _write(session / "state.json", state)  # reserve the attempt before spawning a process
         _result(session, manifest, state)
         try:
             result = _verify(session, manifest, overlay, attempt / "verification")
@@ -865,18 +940,18 @@ def check(run_dir: Path) -> dict:
         state["stalled"] = 0 if progress else state["stalled"] + 1
         state["best_verified"] = max(state["best_verified"], result["verified_count"])
         state["next_action"] = (
-            "revise proof strategy" if state["stalled"] >= cfg["max_stalled"] else "repair proof"
+            "revise proof strategy"
+            if state["stalled"] >= cfg["max_stalled"]
+            or state["attempts"] - state.get("reviewed_at_attempt", 0) >= review_every
+            else "repair proof"
         )
         if result["status"] == "verified":
             state["accepted_attempt"] = attempt.name
             state["next_action"] = "return verified evidence to auditor"
-        elif (
-            result["status"] in {"unsupported", "blocked", "tool_error"}
-            or state["attempts"] >= cfg["max_attempts"]
-        ):
-            state["next_action"] = "return diagnostics to auditor"
+        elif result["status"] in {"unsupported", "blocked", "tool_error"}:
+            state["next_action"] = "diagnose blocker within current audit"
         _write(session / "state.json", state)
-        if state["next_action"].startswith("return"):
+        if state["status"] == "verified":
             _completed(run, manifest, state["status"])
         return _result(session, manifest, state)
 
@@ -896,7 +971,7 @@ def evidence(run_dir: Path) -> dict:
     }
     if expected == "verified":
         attempt = state.get("accepted_attempt")
-        if not isinstance(attempt, str) or not re.fullmatch(r"[0-9]{4}", attempt):
+        if not isinstance(attempt, str) or not re.fullmatch(r"[0-9]{4,}", attempt):
             raise ProofError("missing accepted proof attempt")
         overlay = _read(session / "attempts" / attempt / "overlay.json")
         _, issues = _views(session, manifest, overlay)
@@ -944,23 +1019,48 @@ def finish_test(run_dir: Path) -> dict:
         return _result(session, manifest, state)
 
 
-def feedback(run_dir: Path, owner: str, reason: str) -> dict:
+def feedback(run_dir: Path, owner: str, reason: str, *, blocker: dict | None = None) -> dict:
     run = Run(run_dir)
     with _lock(run):
         session, manifest = _session(run)
         _integrity(run, session, manifest)
+        if owner not in {"proof-planner", "planner", "spec-builder"} or not reason.strip():
+            raise ProofError("feedback requires a supported owner and a nonempty reason")
+        result = _read(session / "result.json")
+        if blocker is not None:
+            required = {"diagnostic", "implementation_change", "proof_only_analysis"}
+            if (
+                owner != "planner"
+                or manifest["routing"]["effective"] != "proof"
+                or result["status"] not in {"incomplete", "unsupported"}
+                or not isinstance(blocker, dict)
+                or set(blocker) != required
+                or any(not isinstance(blocker[k], str) or not blocker[k].strip() for k in required)
+            ):
+                raise ProofError(
+                    "implementation blocker requires a failed proof, planner owner, "
+                    "diagnostic, implementation_change, and proof_only_analysis"
+                )
+            if blocker["diagnostic"] != result.get("diagnostics"):
+                raise ProofError("blocker must cite the latest attempt's diagnostic path")
+            diagnostic = _relative(session, blocker["diagnostic"])
+            if not diagnostic.is_file() or not diagnostic.read_text().strip():
+                raise ProofError("blocker requires nonempty verifier diagnostics")
+            blocker = {**blocker, "diagnostic_hash": _digest(diagnostic)}
         doc = {
             "session": manifest["session"],
             "bindings": manifest["bindings"],
             "owner": owner,
             "reason": reason,
-            "result": _read(session / "result.json"),
-            "classification": "request",
+            "result": result,
+            "classification": "implementation_blocker" if blocker is not None else "request",
             "main_plan_updated": False,
         }
+        if blocker is not None:
+            doc["blocker"] = blocker
         _write(session / "feedback.json", doc)
-        if owner in {"planner", "spec-builder"}:
-            _completed(run, manifest, "handoff")
+        if blocker is not None:
+            _completed(run, manifest, "implementation_blocked", feedback_hash=_hash(doc))
         return doc
 
 
@@ -985,6 +1085,11 @@ def main(argv=None) -> int:
                 "--owner", required=True, choices=("proof-planner", "planner", "spec-builder")
             )
             p.add_argument("--reason", required=True)
+            p.add_argument(
+                "--blocker", type=Path,
+                help="JSON with diagnostic, implementation_change, proof_only_analysis; "
+                "only a diagnosed implementation blocker releases the next round",
+            )
     args = ap.parse_args(argv)
     try:
         if args.command == "tokens":
@@ -1008,7 +1113,10 @@ def main(argv=None) -> int:
             )
             return 0
         if args.command == "feedback":
-            result = feedback(args.run_dir, args.owner, args.reason)
+            result = feedback(
+                args.run_dir, args.owner, args.reason,
+                blocker=_read(args.blocker) if args.blocker else None,
+            )
         else:
             fn = {
                 "start": start,

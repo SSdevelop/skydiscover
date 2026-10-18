@@ -50,11 +50,11 @@ gaps; additions to the specification require an outer-loop decision, not an edit
 
 Every Rust candidate enters this loop. Do not reject a task for containing modules, impls,
 traits, generics, attributes, macros, unsafe code, or dependencies. Make a real verifier/build
-attempt and return its diagnostics. Missing required inputs or tools remain operational blockers;
+attempt and inspect its diagnostics. Missing required inputs or tools remain operational blockers;
 an adapter limitation must be reported as such, never as a proof that the task is unprovable.
 
-1. Inspect `spec.proof status <run>`. A blocked or unsupported session returns diagnostics to the
-   lead. An already verified session needs `spec.proof replay <run>`, not new proof search.
+1. Inspect `spec.proof status <run>`. Keep blocked or unsupported sessions in this audit while
+   diagnosing the cause. An already verified session needs `spec.proof replay <run>`.
    For a new ready session, run `python3 <scripts>/run_verus.py --run <run>` once to obtain actual
    baseline build/verification diagnostics before asking the proof planner to choose repairs.
 2. Run `proof-planner.md` with the session path, frozen obligations, and previous diagnostics.
@@ -62,12 +62,24 @@ an adapter limitation must be reported as such, never as a proof that the task i
    LLM reviewer. The proof coder may add proof-only overlays; it cannot translate or repair code.
 3. Read the runner's result. For a repairable incomplete proof, return diagnostics to the proof
    planner. On `next_action: revise proof strategy`, have it revise the plan before another attempt.
-   Respect the persisted total budget. An unsupported operation stops identical retries; unsafe
-   operations as a class are not automatically unsupported.
-4. On exhaustion or an external blocker, record `spec.proof feedback <run> --owner planner
-   --reason "..."` (or `spec-builder` for spec issues), then return that structured feedback to
-   the lead. A failed proof is not a confirmed defect. Record a defect only with validated evidence
-   and link its existing obligation using `findings add ... --proof-obligation <id>`.
+   Continue this inner loop until verification succeeds or a concrete implementation blocker is
+   established. `attempts_per_review` (legacy `max_attempts`) triggers a strategy review, never
+   exhaustion or a new implementation round. Preserve the total attempt history across reviews
+   and invocations. Try relevant invariants, lemmas, ghost state, and alternative decompositions;
+   a timeout, low verified count, or several unsuccessful approaches does not justify a handoff.
+4. End proof search for implementation repair only when diagnostics identify a necessary change
+   to the frozen implementation. Write a blocker JSON with three nonempty fields:
+   `diagnostic` (the latest attempt's session-relative diagnostics path), `implementation_change`
+   (specific affected code and required redesign/change), and `proof_only_analysis` (approaches
+   tried, their results, and why remaining proof-only options cannot resolve this blocker).
+   Record `spec.proof feedback <run> --owner planner --reason "..." --blocker <file.json>`.
+   Return the resulting feedback to the lead for the next outer round. A clear counterexample
+   or unavoidable unsupported operation need not consume arbitrary extra attempts. Distinguish
+   implementation blockers from fixable adapter/build/tool issues: resolve those within this
+   audit or report an operational blocker for resumption; do not advance planning/coding.
+   Generic feedback and spec questions do not end the audit. A failed proof is not a confirmed
+   defect. Record a defect only with validated evidence and link its existing obligation using
+   `findings add ... --proof-obligation <id>`.
 5. On success, review requirement coverage, preconditions, and assumptions against the frozen
    spec. Missing or ambiguous requirements return to spec resolution. Run `spec.proof replay <run>`
    and `spec.checkpoint stamp-audit <run>` only for accepted coverage. Stamping replays Verus and
