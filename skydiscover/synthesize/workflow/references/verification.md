@@ -10,7 +10,19 @@ implementation. Rust with `audit_mode: proof` uses Verus; C++ uses tests regardl
 The evaluator's tests and measurements remain in the outer loop. Missing proof prerequisites
 cannot be replaced with test results.
 
-The proof worker writes insertion-only overlays. Successful verification must cover every frozen
+The proof boundary is shared infrastructure for Rust/Verus workloads. It does not depend on a
+particular data structure, benchmark, lock layout, or operation name. Protected targets and
+contract-macro names come from the run's frozen `specification/verus.json`; model dependencies
+come from its frozen specification. Ordinary functions, generic impls, and multiple source files
+use the same correspondence rules. Contract-macro bodies use the documented
+`impl Type { method(args) { body } }` grammar; other macro payloads remain opaque and fixed.
+This is a language-adapter restriction, not a restriction to a particular workload.
+
+The proof worker writes annotated-source overlays (legacy insertion overlays remain replayable).
+The pinned Verus parser checks that executable syntax and authoritative/public contracts stay
+unchanged. Private helper contracts and internal proof predicates may evolve; Verus checks their
+callers, bodies, invariant preservation, and ghost ownership. Definitions referenced by frozen
+contracts remain protected, including dependencies across source files. Successful verification must cover every frozen
 obligation and the entire generated target, use the pinned toolchain, and preserve executable
 tokens. The auditor reviews the fixed requirement mapping and assumptions; new requirements go
 through spec resolution. No proof result can claim more than its contract.

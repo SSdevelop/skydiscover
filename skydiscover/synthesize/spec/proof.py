@@ -451,10 +451,19 @@ def _views(session: Path, manifest: dict, overlay: dict) -> tuple[dict, list[str
     """Prepare every frozen Rust file, collecting adapter issues without rejecting the task."""
     cfg = manifest["config"]
     root = session / "inputs" / "impl"
-    if set(overlay) != {"insertions"} or not isinstance(overlay["insertions"], list):
-        raise SourceError("overlay must contain only an insertions list")
+    sources = overlay.get("sources", {})
+    source_mode = set(overlay) == {"sources"} and isinstance(sources, dict)
+    if not source_mode and (
+        set(overlay) != {"insertions"} or not isinstance(overlay["insertions"], list)
+    ):
+        raise SourceError("overlay must contain only a sources object or an insertions list")
+    for name, source in sources.items():
+        path = _relative(root, name)
+        if (not path.is_file() or path.suffix != ".rs" or not isinstance(source, str)
+                or (path.name == "build.rs" and name != cfg["entry"])):
+            raise SourceError("proof sources must name frozen Rust verification files")
     by_file = {}
-    for insertion in overlay["insertions"]:
+    for insertion in overlay.get("insertions", []):
         if not isinstance(insertion, dict):
             raise SourceError("invalid proof insertion")
         name = insertion.get("file", cfg["entry"])
@@ -501,6 +510,20 @@ def _views(session: Path, manifest: dict, overlay: dict) -> tuple[dict, list[str
                 protected_functions=tuple(o["function"] for o in obligations),
             )
         views[name] = base
+    if sources:
+        from .proof_boundary import apply_source
+
+        # Protect model dependencies across file boundaries as well as direct contracts.
+        roots = set()
+        for spec_file in (session / "inputs" / "specification").rglob("*.rs"):
+            roots.update(t.text.removeprefix("r#") for t in tokens(spec_file.read_text()))
+        context = list(views.values())
+        for name, source in sources.items():
+            views[name] = apply_source(
+                views[name], source, roots=roots, context=context,
+                protected=tuple(o["function"] for o in cfg["obligations"]),
+                macros=tuple({o["macro"] for o in cfg["obligations"] if "macro" in o}),
+            )
     for obligation in cfg["obligations"]:
         if obligation.get("file", cfg["entry"]) not in views:
             issues.append(f"obligation {obligation['id']}: source file is absent")

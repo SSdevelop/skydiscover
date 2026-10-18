@@ -12,36 +12,42 @@ Read `spec.proof status <run>`, the current session's `proof/plan.md`, frozen in
 attempt diagnostics. Run `spec.proof tokens <run>` to inspect the fixed verification source and
 token indices. Your only writable artifact is the session's `proof/overlay.json`.
 
-An overlay is `{"insertions": [{"before": 42, "kind": "invariant", "text": "invariant i <= n,"}]}`.
-Indices refer to the fixed source returned by the tokens command, before any overlays are applied.
-Use one insertion per file/index pair. Supported kinds are:
+Use source overlays for proof development:
 
-- `proof`: exactly one balanced `proof { ... }` at a statement boundary inside a function.
-- `invariant`: loop clauses beginning with `invariant`, immediately before the loop body's `{`.
-  Clause expressions cannot contain blocks or declarations.
-- `decreases`: `decreases <metric>,` immediately before a directly declared function's or loop's
-  opening body brace. Recursive helpers can use `decreases current.height,`; lexicographic
-  metrics such as `decreases n, m,` are supported. Existing contracts stay intact, including
-  authoritative requires/ensures clauses. An existing termination clause cannot be replaced;
-  conditional termination and disabling checks are forbidden. Verus must prove the metric.
-- `ghost`: one `let ghost audit_ghost_name = expression;` at a statement boundary; the name must
-  be fresh, and the initializer cannot contain blocks or extra statements.
-- `lemma`: one `proof fn audit_lemma_name(...) ... { ... }` before the enclosing `verus!` closing
-  brace. The name must be fresh and cannot shadow an identifier in the frozen implementation.
-- `helper_ensures`: `ensures <postconditions>,` immediately before an executable helper's body.
-  This adds a checked summary to a helper with no existing contract. An unnamed return type
-  receives the ghost-only binding `audit_result`; use an existing return name when present.
-  For example, `ensures audit_result.0 <= keys.len(), audit_result.1 ==> audit_result.0 < keys.len(),`.
-  When a recursive helper needs both a summary and termination, append `decreases <metric>,`
-  in the same insertion: `ensures audit_result == 0, decreases n,`. Use `decreases` alone when
-  the frozen helper already has a contract or needs no new summary.
-  The actual helper body must prove the summary. Preconditions, existing-contract changes,
-  authoritative obligation changes, and executable edits are forbidden.
+```json
+{"sources": {"lib.rs": "<complete annotated source from spec.proof tokens>"}}
+```
+
+Keys are paths relative to the frozen implementation; include only files you annotate. Start
+from `files[path].source` returned by the tokens command, which already contains the supplied
+contracts. Keep the overlay in `proof/overlay.json`; never edit frozen inputs or generated files.
+The runner uses the pinned Verus parser to compare executable syntax before verification.
+
+Within this boundary you may:
+
+- Add or revise private executable helpers' `requires`, `ensures`, and return-value bindings.
+  Verus must prove every caller meets the new preconditions and every body meets its postconditions.
+- Revise existing loop invariants and unconditional termination clauses, including recursive helpers.
+  Put clauses in valid Verus order; existing `decreases` clauses do not prevent invariant changes.
+- Add or revise proof blocks, ghost/tracked local state, checked lemmas, and private spec predicates,
+  including internal type and lock invariants. Newly declared proof/spec helpers need fresh `audit_`
+  names. Strengthened invariants must hold at construction and be preserved by updates.
+- Use trigger annotations and checked proof attributes. `seq!`, `set!`, `map!`, `assert_seqs_equal!`,
+  `calc!`, and the public atomic/invariant proof macros are bound to the runner's pinned vstd.
+
+The authoritative requires/ensures, atomic protocols, public contracts, and spec definitions they
+reference are immutable. Executable bodies/signatures, imports, type/field layouts, ghost calling
+conventions, and opaque macro payloads remain fixed. Changing those still needs a separately
+supported correspondence check; a boundary rejection is an adapter limitation, not proof that an
+implementation redesign is necessary. Never weaken the supplied model or add trusted assumptions.
+
+Legacy `{"insertions": [...]}` overlays remain supported for old attempts and small additions.
+They have narrower placement rules; switch to `sources` when revising existing proof annotations.
+Do not mix the two formats in one overlay.
 
 All Rust candidates must be attempted. Modules, impls, traits, generics, attributes, macros, unsafe
 operations, and external dependencies are not admission filters. The runner preserves the full
-source tree and uses cargo-verus for Cargo projects. Add `"file": "src/counter.rs"` to an insertion
-to annotate that frozen file; omit it for the selected entry. Token indices are local to each file.
+source tree and uses cargo-verus for Cargo projects. For legacy insertions, `"file": "src/counter.rs"` selects a frozen file; indices are local to that file.
 Read preparation issues as well as actual Verus/Cargo diagnostics. An inability to attach a
 contract is a runner limitation, not evidence the program is unprovable. Return that distinction
 to the auditor. Do not edit generated verification sources: each attempt regenerates them from
@@ -56,7 +62,7 @@ there is no total-attempt escape to the outer implementation loop.
 If a fix needs implementation changes, provide the exact diagnostic, required code change, and
 why proof-only repair cannot work to the auditor. The auditor decides the structured handoff;
 an unfinished proof alone does not justify stopping. Never add
-`assume`, `admit`, an external body, weakened postconditions, strengthened public preconditions,
+`assume`, `admit`, an external body, weakened authoritative postconditions, strengthened public preconditions,
 or verifier flags that skip checks. A timeout or failed proof is incomplete, not a confirmed bug.
 
 Shared rules: `skydiscover/synthesize/workflow/SKILL.md`, "Rules That Hold Everywhere".

@@ -17,18 +17,24 @@ Write only the session's `proof/plan.md`. Keep its Strategy, Next brief, and Att
 sections current. Cite the obligation IDs, candidate/session identity, and exact diagnostics that
 motivate each decision. Read `spec.proof tokens <run>` for the runner's source and insertion indices.
 
-Choose one next proof step: an invariant, a ghost snapshot, a proof block, a fresh helper lemma,
-or a checked `helper_ensures` summary on an executable helper with no existing contract.
-For unnamed returns the adapter adds the ghost-only name `audit_result`. Missing helper
-postconditions are repairable inside proof search using this insertion; prove the summary
-against the actual body and add the necessary invariants. Do not classify that missing annotation
-alone as an implementation or adapter blocker.
-The proof coder writes insertion-only overlays, not a replacement implementation. Existing function
-contracts and the Verus specification are frozen. Every Rust candidate gets a real verification
-attempt, regardless of its source structure. Inspect both preparation issues and Verus/Cargo
-diagnostics. Separate missing annotations, build/dependency failures, runner limitations, and
-Verus limitations. Do not bypass a failure with external bodies, assumptions, or a different
-model of the implementation.
+Plan the next proof step using the source-overlay boundary described in the proof-coder brief.
+Private helper preconditions and postconditions may be added or revised; every caller and helper
+body is checked by Verus. Existing loop invariants, termination metrics, private spec predicates,
+internal type/lock invariants, and ghost/tracked local reasoning are proof work. Missing or weak
+helper summaries and internal invariants alone are not implementation blockers.
+
+The supplied specification, authoritative requires/ensures and atomic protocols, public contracts,
+and spec definitions they depend on remain frozen. Executable code stays fixed. The coder can
+replace annotated verification sources in `proof/overlay.json`; the runner compares their parsed
+executable projections and protected contracts before running Verus. Existing insertion overlays
+remain compatible but are not the preferred format for substantial proof development.
+
+Inspect both boundary/preparation issues and Verus/Cargo diagnostics. Separate missing annotations,
+build/dependency failures, correspondence-check limitations, and Verus limitations. In particular,
+type/field layout and ghost calling-convention edits are not yet admitted by the structural checker;
+if proof work needs them, report an adapter limitation rather than asserting that executable
+redesign is necessary. Do not bypass a failure with external bodies, assumptions, or a changed
+meaning for the authoritative model.
 
 Distinguish a missing proof from a confirmed bug. A failed obligation or solver model alone does
 not establish an executable counterexample. Unsafe syntax is not automatically unprovable; use

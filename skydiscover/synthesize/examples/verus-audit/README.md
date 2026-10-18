@@ -104,29 +104,34 @@ python3 -m skydiscover.synthesize.spec.checkpoint stamp-audit <run>
 `workflow/scripts/run_verus.py --run <run>` performs one attempt; `--replay` checks accepted evidence
 again without consuming proof-search budget. Use the installed scripts path outside this directory.
 
-Permitted overlays insert balanced proof blocks, loop annotations, function termination clauses,
-fresh ghost bindings, fresh helper proof functions, or checked helper postconditions.
-They cannot remove or replace source tokens. Verification source is
-regenerated from frozen inputs on every check and replay; editing generated files cannot change
-the proof that gets accepted.
+For substantial proof work, use a source overlay instead of token insertions:
 
-Use `kind: "helper_ensures"` at an executable helper's opening body brace to add, for example,
-`ensures audit_result.0 <= keys.len(), audit_result.1 ==> audit_result.0 < keys.len(),`.
-The adapter names an unnamed return `audit_result` using inserted ghost syntax; an existing
-named return keeps its original name. The helper body must prove its postcondition during
-whole-target verification. This supports modular proofs without editing executable code.
-Existing contracts, authoritative obligation functions, preconditions, and executable bodies
-cannot be changed by this insertion. An incorrect summary fails verification.
+```json
+{"sources": {"counter.rs": "<complete annotated source from the tokens command>"}}
+```
 
-Use `kind: "decreases"` at a directly declared function's opening body brace to insert
-`decreases current.height,` or a lexicographic metric such as `decreases n, m,`. This also works
-at a loop body when no invariants are needed. Existing requires/ensures clauses remain intact;
-existing termination clauses cannot be replaced. Conditional termination, additional contracts,
-and disabling termination checking are not permitted. Verus checks strict decrease, so an
-incorrect metric fails verification. To add both a helper summary and a termination metric at
-the same token, use one `helper_ensures` insertion, e.g.
-`ensures audit_result == 0, decreases n,`. A missing recursive termination annotation is proof
-work, not by itself an implementation blocker.
+Use `files[path].source` from `spec.proof tokens` as the starting source, with the supplied
+contracts already attached. Include only frozen Rust verification files; omitted files stay fixed.
+The pinned Verus parser compares executable syntax and protected contracts before Verus checks
+the whole generated crate. Replay repeats both checks from frozen inputs.
+
+Source overlays permit revisions to private helper requires/ensures, existing invariants and
+termination clauses, private spec predicates, proof functions, and ghost/tracked local reasoning.
+Helper callers must establish the revised preconditions; bodies must prove the revised guarantees.
+Internal type/lock invariants may evolve, with construction and preservation checked by Verus.
+New proof/spec functions use fresh `audit_` names. Checked trigger annotations and the vstd
+`seq!`, `set!`, `map!`, `assert_seqs_equal!`, and `calc!` macros are supported.
+
+Authoritative requires/ensures, public contracts, atomic protocols, and spec definitions they
+reference remain fixed. Executable bodies/signatures, imports, type/field layouts, ghost calling
+conventions, and unknown macro payloads remain fixed too. Unsupported correspondence edits are
+adapter limitations, not evidence that the implementation is unprovable. Assumptions, external
+bodies, unverified axioms, and disabling checks are forbidden.
+
+Legacy insertion overlays still support `proof`, `invariant`, `decreases`, `ghost`, `lemma`, and
+`helper_ensures`. Their original placement restrictions are retained for compatibility. Use the
+source format to revise an existing helper contract or put a new invariant before an existing
+termination clause. Do not mix `sources` and `insertions` in one overlay.
 
 Proof overlays support the complete public atomic-update and invariant proof macro API
 of Verus commit `8dea4a2196ebf99449fe2f141a2fb30acae3f17c`:

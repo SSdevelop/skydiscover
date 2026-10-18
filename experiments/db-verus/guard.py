@@ -30,9 +30,10 @@ def reason(project, payload, stopping=False):
             else 0
         )
         if done and last < done:
-            update = project / ".experiment/proof-adapter-update.md"
-            hint = " Read .experiment/proof-adapter-update.md before retrying the old blocker." if update.exists() else ""
-            return f"Round {done} still needs its proof audit outcome, including the final round. Run the auditor." + hint
+            return (
+                f"Round {done} still needs its proof audit outcome, including the final round. "
+                "Run the auditor."
+            )
     elif done >= budget:
         # Do not let a fresh role launch silently turn a 50-round experiment into 51 rounds.
         import importlib.util

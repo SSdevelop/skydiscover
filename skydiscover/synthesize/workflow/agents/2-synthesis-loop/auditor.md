@@ -59,7 +59,10 @@ an adapter limitation must be reported as such, never as a proof that the task i
    baseline build/verification diagnostics before asking the proof planner to choose repairs.
 2. Run `proof-planner.md` with the session path, frozen obligations, and previous diagnostics.
    Then run `proof-coder.md` with the updated proof brief. Verus is invoked by the runner, not an
-   LLM reviewer. The proof coder may add proof-only overlays; it cannot translate or repair code.
+   LLM reviewer. The proof coder may revise private helper contracts, internal proof invariants,
+   and proof bodies through parsed source overlays; every caller/body remains checked by Verus.
+   The supplied requires/ensures, their model dependencies, and executable code stay fixed.
+   Missing helper summaries or internal invariants are proof work, not implementation blockers.
 3. Read the runner's result. For a repairable incomplete proof, return diagnostics to the proof
    planner. On `next_action: revise proof strategy`, have it revise the plan before another attempt.
    Continue this inner loop until verification succeeds or a concrete implementation blocker is

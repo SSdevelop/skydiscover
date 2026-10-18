@@ -1172,3 +1172,176 @@ def test_release_replays_proof_and_repeated_export_refreshes_frozen_inputs(run, 
     accepted.write_text('{"insertions": []}')
     with pytest.raises(proof.ProofError, match="replay failed"):
         proof.replay(copied.path)
+
+
+def source_overlay(run, source):
+    overlay, _ = overlay_path(run)
+    session, manifest = proof._session(run)
+    overlay.write_text(json.dumps({"sources": {manifest["config"]["entry"]: source}}))
+
+
+@pytest.mark.parametrize('contract,expected', [
+    ('requires n < 100, ensures r == n,', 'verified'),
+    ('requires n < 5, ensures r == n,', 'incomplete'),
+    ('requires n < 100, ensures r == 0,', 'incomplete'),
+])
+def test_source_helper_contracts_are_checked_at_body_and_callers(run, verus, contract, expected):
+    configure_target(run, {'lib.rs': '''use vstd::prelude::*;
+verus! {
+fn helper(n: u64) -> (r: u64) ensures r <= n, { n }
+fn count(n: u64) -> u64 { helper(n) }
+}'''}, entry='lib.rs', function='count', ensures='result == n')
+    cfg = json.loads(run.verus_config.read_text())
+    cfg['obligations'][0]['requires'] = 'n < 10'
+    run.verus_config.write_text(json.dumps(cfg))
+    assert proof.start(run.path)['status'] == 'ready'
+    _, base = overlay_path(run)
+    source_overlay(run, base.replace('ensures r <= n,', contract))
+    result = proof.check(run.path)
+    assert result['status'] == expected, result
+    if expected == 'verified':
+        assert proof.replay(run.path)['obligations'] == ['required']
+    else:
+        session, _ = proof._session(run)
+        diagnostics = (session / result['diagnostics']).read_text()
+        assert ('precondition' if 'n < 5' in contract else 'postcondition') in diagnostics
+
+
+def test_source_mode_invariant_replacement_and_seq_lemma(run, verus):
+    configure_target(run, {'lib.rs': '''use vstd::prelude::*;
+verus! {
+fn count(n: u64) -> u64 {
+    let mut i = 0u64;
+    while i < n invariant i <= n, decreases n - i, { i = i + 1; }
+    i
+}
+}'''}, entry='lib.rs', function='count', ensures='result == n')
+    assert proof.start(run.path)['status'] == 'ready'
+    _, base = overlay_path(run)
+    source = base.replace('invariant i <= n,', 'invariant i <= n, i >= 0,')
+    source = source[:source.rfind('}')] + '''
+proof fn audit_seq() { assert(seq![1int].len() == 1); }
+}'''
+    source_overlay(run, source)
+    result = proof.check(run.path)
+    assert result['status'] == 'verified', result
+    assert proof.replay(run.path)['obligations'] == ['required']
+
+
+def test_source_mode_macro_contract_replays(run, verus):
+    macro_candidate(run, '''use vstd::prelude::*;
+verus! { pub struct Counter {} }
+crate::audit_counter! { impl Counter { count(n) { verus_exec_expr! {{
+    let mut i = 0u64;
+    while i < n { i = i + 1; }
+    i
+}} } } }
+''')
+    assert proof.start(run.path)['status'] == 'ready'
+    _, base = overlay_path(run)
+    source_overlay(run, base.replace('while i < n {', 'while i < n invariant i <= n, decreases n-i, {'))
+    result = proof.check(run.path)
+    assert result['status'] == 'verified', result
+    assert proof.replay(run.path)['obligations'] == ['count']
+
+
+@pytest.mark.parametrize('bound,expected', [(10, 'verified'), (5, 'incomplete')])
+def test_source_internal_type_invariant_is_checked_at_construction(run, verus, bound, expected):
+    configure_target(run, {'lib.rs': '''use vstd::prelude::*;
+verus! {
+struct Cell { value: u64 }
+impl Cell {
+    #[verifier::type_invariant]
+    closed spec fn valid(self) -> bool { self.value < 100 }
+}
+fn count(n: u64) -> u64 { let cell = Cell { value: n }; cell.value }
+}'''}, entry='lib.rs', function='count', ensures='result == n')
+    cfg = json.loads(run.verus_config.read_text())
+    cfg['obligations'][0]['requires'] = 'n < 10'
+    run.verus_config.write_text(json.dumps(cfg))
+    assert proof.start(run.path)['status'] == 'ready'
+    _, base = overlay_path(run)
+    source_overlay(run, base.replace('self.value < 100', f'self.value < {bound}'))
+    result = proof.check(run.path)
+    assert result['status'] == expected, result
+    if expected == 'incomplete':
+        session, _ = proof._session(run)
+        assert 'invariant' in (session / result['diagnostics']).read_text()
+
+
+# These workloads deliberately share no implementation, API names, or experiment setup with
+# the database benchmark. Exercise the public proof lifecycle, not only the AST checker.
+_GENERAL_BOUNDARY_CASES = [
+    pytest.param(
+        {'lib.rs': '''use vstd::prelude::*;
+verus! {
+fn walk(n: u64) -> (r: u64) ensures r <= n, decreases n, {
+    if n == 0 { 0 } else { walk(n - 1) + 1 }
+}
+pub fn evaluate(n: u64) -> u64 { walk(n) }
+}'''},
+        'evaluate', 'lib.rs', 'result == n',
+        ('ensures r <= n, decreases n,', 'ensures r == n, decreases n + 1,'),
+        ('walk(n - 1) + 1', 'walk(n - 1)'),
+        id='recursive-arithmetic',
+    ),
+    pytest.param(
+        {'lib.rs': '''use vstd::prelude::*;
+verus! {
+pub struct Envelope<T> { pub value: T }
+impl<T> Envelope<T> {
+    fn extract(self) -> (r: T) ensures true, { self.value }
+    pub fn unwrap(self) -> T { self.extract() }
+}
+}'''},
+        'Envelope::unwrap', 'lib.rs', 'result == self.value',
+        ('ensures true,', 'ensures r == self.value,'),
+        ('self.extract()', 'self.unwrap()'),
+        id='generic-container',
+    ),
+    pytest.param(
+        {'lib.rs': 'pub mod buffer;', 'buffer.rs': '''use vstd::prelude::*;
+verus! {
+fn last(xs: &Vec<u64>) -> (r: Option<u64>)
+    ensures r.is_some() == (xs.len() > 0),
+{
+    if xs.len() == 0 { None } else { Some(xs[xs.len() - 1]) }
+}
+pub fn peek(xs: &Vec<u64>) -> Option<u64> { last(xs) }
+}'''},
+        'buffer::peek', 'buffer.rs',
+        '(xs.len() == 0 ==> result.is_none()) && (xs.len() > 0 ==> result == Some(xs[xs.len() as int - 1]))',
+        ('ensures r.is_some() == (xs.len() > 0),',
+         'ensures (xs.len() == 0 ==> r.is_none()) && (xs.len() > 0 ==> r == Some(xs[xs.len() as int - 1])),'),
+        ('Some(xs[xs.len() - 1])', 'Some(0)'),
+        id='multi-file-buffer',
+    ),
+]
+
+
+@pytest.mark.parametrize('files,function,target,ensures,annotation,runtime_edit', _GENERAL_BOUNDARY_CASES)
+def test_source_boundary_is_workload_independent(
+    run, verus, files, function, target, ensures, annotation, runtime_edit,
+):
+    configure_target(run, files, 'lib.rs', function, ensures, obligation_file=target)
+    assert proof.start(run.path)['status'] == 'ready'
+    assert proof.check(run.path)['status'] == 'incomplete'
+    frozen = proof._bindings(run)
+    session, manifest = proof._session(run)
+    views, issues = proof._views(session, manifest, {'insertions': []})
+    assert not issues
+    source = views[target].replace(*annotation)
+    assert source != views[target]
+    overlay = session / 'proof/overlay.json'
+    overlay.write_text(json.dumps({'sources': {target: source}}))
+    result = proof.check(run.path)
+    assert result['status'] == 'verified', result
+    assert proof.replay(run.path)['obligations'] == ['required']
+
+    for tampered in (source.replace(*runtime_edit), source.replace(ensures, 'true')):
+        assert tampered != source
+        # Verified sessions deliberately keep their immutable accepted attempt. Test the
+        # correspondence gate directly rather than asking check() to reopen that session.
+        with pytest.raises(SourceError, match='proof boundary'):
+            proof._views(session, manifest, {'sources': {target: tampered}})
+    assert proof._bindings(run) == frozen

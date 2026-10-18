@@ -1,0 +1,11 @@
+[package]
+name = "skydiscover-proof-boundary"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+verus_syn = { version = "=0.0.0-2026-09-06-0133", features = ["full", "visit-mut", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+serde_json = "1"
