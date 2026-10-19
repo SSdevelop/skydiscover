@@ -515,9 +515,12 @@ def _views(session: Path, manifest: dict, overlay: dict) -> tuple[dict, list[str
 
         # Protect model dependencies across file boundaries as well as direct contracts.
         roots = set()
+        specification_context = []
         for spec_file in (session / "inputs" / "specification").rglob("*.rs"):
-            roots.update(t.text.removeprefix("r#") for t in tokens(spec_file.read_text()))
-        context = list(views.values())
+            spec_source = spec_file.read_text()
+            specification_context.append(spec_source)
+            roots.update(t.text.removeprefix("r#") for t in tokens(spec_source))
+        context = list(views.values()) + specification_context
         for name, source in sources.items():
             views[name] = apply_source(
                 views[name], source, roots=roots, context=context,

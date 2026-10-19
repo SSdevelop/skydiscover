@@ -1225,9 +1225,9 @@ def test_source_spec_dependency_identity_with_real_verus(run, verus, name, repai
 
 
 @pytest.mark.parametrize('contract,expected', [
-    ('requires n < 100, ensures r == n,', 'verified'),
-    ('requires n < 5, ensures r == n,', 'incomplete'),
-    ('requires n < 100, ensures r == 0,', 'incomplete'),
+    ('requires n < 100, ensures r == n,', 'invalid'),
+    ('requires n < 5, ensures r == n,', 'invalid'),
+    ('requires n < 100, ensures r == 0,', 'invalid'),
 ])
 def test_source_helper_contracts_are_checked_at_body_and_callers(run, verus, contract, expected):
     configure_target(run, {'lib.rs': '''use vstd::prelude::*;
@@ -1243,12 +1243,8 @@ fn count(n: u64) -> u64 { helper(n) }
     source_overlay(run, base.replace('ensures r <= n,', contract))
     result = proof.check(run.path)
     assert result['status'] == expected, result
-    if expected == 'verified':
-        assert proof.replay(run.path)['obligations'] == ['required']
-    else:
-        session, _ = proof._session(run)
-        diagnostics = (session / result['diagnostics']).read_text()
-        assert ('precondition' if 'n < 5' in contract else 'postcondition') in diagnostics
+    assert 'existing helper contract changed' in result['message']
+    assert proof.status(run.path)['accepted_attempt'] is None
 
 
 def test_source_mode_invariant_replacement_and_seq_lemma(run, verus):
@@ -1289,7 +1285,7 @@ crate::audit_counter! { impl Counter { count(n) { verus_exec_expr! {{
     assert proof.replay(run.path)['obligations'] == ['count']
 
 
-@pytest.mark.parametrize('bound,expected', [(10, 'verified'), (5, 'incomplete')])
+@pytest.mark.parametrize('bound,expected', [(10, 'invalid'), (5, 'invalid')])
 def test_source_internal_type_invariant_is_checked_at_construction(run, verus, bound, expected):
     configure_target(run, {'lib.rs': '''use vstd::prelude::*;
 verus! {
@@ -1308,9 +1304,8 @@ fn count(n: u64) -> u64 { let cell = Cell { value: n }; cell.value }
     source_overlay(run, base.replace('self.value < 100', f'self.value < {bound}'))
     result = proof.check(run.path)
     assert result['status'] == expected, result
-    if expected == 'incomplete':
-        session, _ = proof._session(run)
-        assert 'invariant' in (session / result['diagnostics']).read_text()
+    assert 'all existing specs are frozen' in result['message']
+    assert proof.status(run.path)['accepted_attempt'] is None
 
 
 # These workloads deliberately share no implementation, API names, or experiment setup with
@@ -1319,13 +1314,13 @@ _GENERAL_BOUNDARY_CASES = [
     pytest.param(
         {'lib.rs': '''use vstd::prelude::*;
 verus! {
-fn walk(n: u64) -> (r: u64) ensures r <= n, decreases n, {
+fn walk(n: u64) -> (r: u64) decreases n, {
     if n == 0 { 0 } else { walk(n - 1) + 1 }
 }
 pub fn evaluate(n: u64) -> u64 { walk(n) }
 }'''},
         'evaluate', 'lib.rs', 'result == n',
-        ('ensures r <= n, decreases n,', 'ensures r == n, decreases n + 1,'),
+        ('decreases n,', 'ensures r == n, decreases n + 1,'),
         ('walk(n - 1) + 1', 'walk(n - 1)'),
         id='recursive-arithmetic',
     ),
@@ -1334,12 +1329,12 @@ pub fn evaluate(n: u64) -> u64 { walk(n) }
 verus! {
 pub struct Envelope<T> { pub value: T }
 impl<T> Envelope<T> {
-    fn extract(self) -> (r: T) ensures true, { self.value }
+    fn extract(self) -> (r: T) { self.value }
     pub fn unwrap(self) -> T { self.extract() }
 }
 }'''},
         'Envelope::unwrap', 'lib.rs', 'result == self.value',
-        ('ensures true,', 'ensures r == self.value,'),
+        ('fn extract(self) -> (r: T)', 'fn extract(self) -> (r: T) ensures r == self.value,'),
         ('self.extract()', 'self.unwrap()'),
         id='generic-container',
     ),
@@ -1347,7 +1342,6 @@ impl<T> Envelope<T> {
         {'lib.rs': 'pub mod buffer;', 'buffer.rs': '''use vstd::prelude::*;
 verus! {
 fn last(xs: &Vec<u64>) -> (r: Option<u64>)
-    ensures r.is_some() == (xs.len() > 0),
 {
     if xs.len() == 0 { None } else { Some(xs[xs.len() - 1]) }
 }
@@ -1355,8 +1349,8 @@ pub fn peek(xs: &Vec<u64>) -> Option<u64> { last(xs) }
 }'''},
         'buffer::peek', 'buffer.rs',
         '(xs.len() == 0 ==> result.is_none()) && (xs.len() > 0 ==> result == Some(xs[xs.len() as int - 1]))',
-        ('ensures r.is_some() == (xs.len() > 0),',
-         'ensures (xs.len() == 0 ==> r.is_none()) && (xs.len() > 0 ==> r == Some(xs[xs.len() as int - 1])),'),
+        ('fn last(xs: &Vec<u64>) -> (r: Option<u64>)',
+         'fn last(xs: &Vec<u64>) -> (r: Option<u64>) ensures (xs.len() == 0 ==> r.is_none()) && (xs.len() > 0 ==> r == Some(xs[xs.len() as int - 1])),'),
         ('Some(xs[xs.len() - 1])', 'Some(0)'),
         id='multi-file-buffer',
     ),
@@ -1389,3 +1383,20 @@ def test_source_boundary_is_workload_independent(
         with pytest.raises(SourceError, match='proof boundary'):
             proof._views(session, manifest, {'sources': {target: tampered}})
     assert proof._bindings(run) == frozen
+
+
+def test_source_new_helper_checks_frozen_spec_macro_context(run, verus):
+    # A macro in the frozen specification can expand to references not visible
+    # in the candidate implementation. Treat unresolved expansions conservatively.
+    (run.impl / "counter.rs").write_text(
+        "use vstd::prelude::*; verus! { pub fn count(n: u64) -> u64 { n } }"
+    )
+    spec = run.verus_config.parent / "contract.rs"
+    spec.write_text(spec.read_text().replace("result == n", "seq![result] == seq![n]"))
+    assert proof.start(run.path)["status"] == "ready"
+    _, base = overlay_path(run)
+    candidate = base[:base.rfind("}")] + "proof fn audit_extra() {}\n}"
+    source_overlay(run, candidate)
+    result = proof.check(run.path)
+    assert result["status"] == "invalid", result
+    assert "new name bindings across opaque macros" in result["message"]

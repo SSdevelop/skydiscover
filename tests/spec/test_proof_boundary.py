@@ -14,7 +14,8 @@ fn helper(n: u64) -> (r: u64)
 { n }
 }'''
     annotated = source.replace('ensures r <= n,', 'ensures r == n,').replace('limit: 10', 'limit: 20')
-    assert apply_source(source, annotated) == annotated
+    with pytest.raises(SourceError, match="existing helper contract"):
+        apply_source(source, annotated)
 
 
 @pytest.mark.parametrize('edit', [
@@ -48,7 +49,8 @@ pub closed spec fn identity(n: int) -> bool { intermediate(n) }
     with pytest.raises(SourceError, match='authoritative contract'):
         apply_source(source, source.replace('n >= 0', 'true'))
     source = source[:source.index('pub closed')] + '}'
-    assert 'true' in apply_source(source, source.replace('n >= 0', 'true'))
+    with pytest.raises(SourceError, match='authoritative contract'):
+        apply_source(source, source.replace('n >= 0', 'true'))
     with pytest.raises(SourceError, match='authoritative contract'):
         apply_source(source, source.replace('n >= 0', 'true'), roots=['intermediate'])
     with pytest.raises(SourceError, match='authoritative contract'):

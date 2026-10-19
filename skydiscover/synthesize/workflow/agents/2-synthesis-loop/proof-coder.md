@@ -25,18 +25,21 @@ The runner uses the pinned Verus parser to compare executable syntax before veri
 
 Within this boundary you may:
 
-- Add or revise private executable helpers' `requires`, `ensures`, and return-value bindings.
-  Verus must prove every caller meets the new preconditions and every body meets its postconditions.
+- Add an absent `ensures` to a private executable helper, with a fresh return-value binding
+  if needed. Existing clauses and bindings stay frozen; adding preconditions is forbidden.
+  Verus must prove the new summary against the unchanged body and original preconditions.
 - Revise existing loop invariants and unconditional termination clauses, including recursive helpers.
   Put clauses in valid Verus order; existing `decreases` clauses do not prevent invariant changes.
-- Add or revise proof blocks, ghost/tracked local state, checked lemmas, and private spec predicates,
-  including internal type and lock invariants. Newly declared proof/spec helpers need fresh `audit_`
-  names. Strengthened invariants must hold at construction and be preserved by updates.
+- Add or revise proof blocks, ghost/tracked local state, and checked lemma bodies. All existing
+  spec definitions (including private type/lock invariants) and proof-function contracts are frozen.
+  New proof/spec helpers need fresh `audit_` names that occur nowhere in frozen source or context.
+  Adding a type invariant is not an allowed proof-only change because it changes implicit contracts.
 - Use trigger annotations and checked proof attributes. `seq!`, `set!`, `map!`, `assert_seqs_equal!`,
   `calc!`, and the public atomic/invariant proof macros are bound to the runner's pinned vstd.
 
-The authoritative requires/ensures, atomic protocols, public contracts, and spec definitions they
-reference are immutable. Executable bodies/signatures, imports, type/field layouts, ghost calling
+All existing spec definitions and contracts are immutable, even when reached through aliases
+or not referenced by an authoritative target. Only the explicit absent-helper-summary extension
+above is allowed. New helpers or return bindings cannot shadow frozen identifiers. Executable bodies/signatures, imports, type/field layouts, ghost calling
 conventions, and opaque macro payloads remain fixed. Changing those still needs a separately
 supported correspondence check; a boundary rejection is an adapter limitation, not proof that an
 implementation redesign is necessary. Never weaken the supplied model or add trusted assumptions.
@@ -66,3 +69,8 @@ an unfinished proof alone does not justify stopping. Never add
 or verifier flags that skip checks. A timeout or failed proof is incomplete, not a confirmed bug.
 
 Shared rules: `skydiscover/synthesize/workflow/SKILL.md`, "Rules That Hold Everywhere".
+
+The checker does not resolve opaque macro expansions. If frozen sources or context contain
+opaque macro invocations, adding helpers or return bindings is conservatively rejected.
+Keep declarations fixed and use allowed proof statements/loop annotations, or report the
+specific correspondence limitation. Never reinterpret that rejection as verifier success.

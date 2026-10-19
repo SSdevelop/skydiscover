@@ -18,13 +18,14 @@ sections current. Cite the obligation IDs, candidate/session identity, and exact
 motivate each decision. Read `spec.proof tokens <run>` for the runner's source and insertion indices.
 
 Plan the next proof step using the source-overlay boundary described in the proof-coder brief.
-Private helper preconditions and postconditions may be added or revised; every caller and helper
-body is checked by Verus. Existing loop invariants, termination metrics, private spec predicates,
-internal type/lock invariants, and ghost/tracked local reasoning are proof work. Missing or weak
-helper summaries and internal invariants alone are not implementation blockers.
+A private executable helper may receive a previously absent postcondition and a fresh return
+binding, checked by Verus. Existing helper contracts and all original spec definitions are frozen;
+adding preconditions or type invariants is forbidden. Existing loop invariants, unconditional
+termination metrics, checked lemma bodies, and ghost/tracked local reasoning remain proof work.
+A frozen weak summary may require a correspondence-policy discussion, not an executable rewrite.
 
 The supplied specification, authoritative requires/ensures and atomic protocols, public contracts,
-and spec definitions they depend on remain frozen. Executable code stays fixed. The coder can
+and every existing spec definition remain frozen, including private and alias-referenced predicates. Executable code stays fixed. The coder can
 replace annotated verification sources in `proof/overlay.json`; the runner compares their parsed
 executable projections and protected contracts before running Verus. Existing insertion overlays
 remain compatible but are not the preferred format for substantial proof development.
@@ -60,3 +61,8 @@ Return the updated brief and either a concrete proof step or a handoff request. 
 whether the proof passed.
 
 Shared rules: `skydiscover/synthesize/workflow/SKILL.md`, "Rules That Hold Everywhere".
+
+The checker does not resolve opaque macro expansions. If frozen sources or context contain
+opaque macro invocations, adding helpers or return bindings is conservatively rejected.
+Keep declarations fixed and use allowed proof statements/loop annotations, or report the
+specific correspondence limitation. Never reinterpret that rejection as verifier success.

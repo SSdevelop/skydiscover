@@ -54,6 +54,33 @@ fn identifiers(ts: TokenStream) -> BTreeSet<String> {
     out
 }
 
+// The parser does not resolve names emitted by opaque macros. Even unchanged
+// macro text can bind differently after adding a declaration. Inspect all tokens,
+// including frozen spec bodies that Projection deliberately does not recurse into.
+fn opaque_macro_names(ts: TokenStream) -> BTreeSet<String> {
+    use proc_macro2::TokenTree;
+    let tokens: Vec<_> = ts.into_iter().collect();
+    let mut names = BTreeSet::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if let TokenTree::Group(group) = token {
+            names.extend(opaque_macro_names(group.stream()));
+        }
+        if let [TokenTree::Ident(name), TokenTree::Punct(bang), TokenTree::Group(_)] =
+            &tokens[index..tokens.len().min(index + 3)]
+        {
+            if bang.as_char() == '!' {
+                let name = ident_name(name);
+                let qualified = index > 0
+                    && matches!(&tokens[index - 1], TokenTree::Punct(p) if p.as_char() == ':');
+                if qualified || !matches!(name.as_str(), "verus" | "verus_exec_expr") {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    names
+}
+
 // The frozen contract macro grammar already admitted by proof_source.macro_functions.
 struct ContractBody {
     ty: Ident,
@@ -89,10 +116,11 @@ impl ToTokens for ContractBody {
 struct Projection {
     protected: BTreeSet<String>,
     contract_macros: BTreeSet<String>,
-    // Spec definitions reachable from the supplied model/contracts stay immutable.
-    roots: BTreeSet<String>,
-    specs: BTreeMap<String, (String, BTreeSet<String>)>,
+    // Every pre-existing spec definition stays immutable, including private predicates.
+    specs: BTreeMap<String, String>,
     spec_spans: BTreeMap<String, Span>,
+    helper_signatures: BTreeMap<String, Signature>,
+    proof_signatures: BTreeMap<String, Signature>,
     proof_names: BTreeSet<String>,
     ranges: Vec<(usize, usize)>,
     lines: Vec<usize>,
@@ -118,9 +146,10 @@ impl Projection {
                 .map(|s| canonical_path(s))
                 .collect(),
             contract_macros: strings("macros"),
-            roots: strings("roots").iter().map(|s| canonical_path(s)).collect(),
             specs: BTreeMap::new(),
             spec_spans: BTreeMap::new(),
+            helper_signatures: BTreeMap::new(),
+            proof_signatures: BTreeMap::new(),
             proof_names: BTreeSet::new(),
             ranges: Vec::new(),
             lines,
@@ -155,9 +184,6 @@ impl Projection {
         *value = None;
     }
     fn signature(&mut self, s: &mut Signature, public: bool) {
-        if let Some(protocol) = &s.spec.atomic_spec {
-            self.roots.extend(identifiers(protocol.to_token_stream()));
-        }
         let local_name = ident_name(&s.ident);
         let name = self
             .scope
@@ -172,12 +198,12 @@ impl Projection {
                 .protected
                 .iter()
                 .any(|p| p.rsplit("::").next() == Some(local_name.as_str()));
-        if protected {
-            let mut contract = s.spec.clone();
-            contract.decreases = None;
-            contract.prover = None;
-            self.roots.extend(identifiers(contract.to_token_stream()));
-        } else {
+        if !protected {
+            // A missing private postcondition may be supplied, but no existing
+            // contract or input restriction may be changed. Compare it below.
+            if self.helper_signatures.insert(name, s.clone()).is_some() {
+                self.errors.push("ambiguous helper definition".into());
+            }
             self.erase(&mut s.spec.requires);
             self.erase(&mut s.spec.ensures);
             self.erase(&mut s.spec.recommends);
@@ -196,7 +222,7 @@ impl Projection {
         self.erase(&mut s.spec.decreases);
         self.erase(&mut s.spec.prover);
     }
-    fn record_proof(&mut self, s: &Signature, public: bool, definition: TokenStream, span: Span) {
+    fn record_proof(&mut self, s: &Signature, definition: TokenStream, span: Span) {
         if s.spec.decreases.as_ref().is_some_and(|d| d.when.is_some()) {
             self.errors
                 .push("conditional termination is outside the proof boundary".into());
@@ -205,18 +231,20 @@ impl Projection {
         self.proof_names
             .insert(format!("{}::{}", self.scope.join("::"), name));
         if spec_mode(s) {
-            if public {
-                self.roots.insert(name.clone());
-            }
-            let refs = identifiers(definition.clone());
             let key = format!("{}::{}", self.scope.join("::"), name);
             self.spec_spans.insert(key.clone(), span);
             if self
                 .specs
-                .insert(key, (definition.to_string(), refs))
+                .insert(key, definition.to_string())
                 .is_some()
             {
                 self.errors.push("ambiguous spec definition".into());
+            }
+        }
+        if matches!(s.mode, FnMode::Proof(_)) {
+            let key = format!("{}::{}", self.scope.join("::"), name);
+            if self.proof_signatures.insert(key, s.clone()).is_some() {
+                self.errors.push("ambiguous proof definition".into());
             }
         }
         self.region(span);
@@ -227,7 +255,6 @@ impl Projection {
                 if proof_mode(&f.sig) {
                     self.record_proof(
                         &f.sig,
-                        !matches!(f.vis, Visibility::Inherited),
                         f.to_token_stream(),
                         f.span(),
                     );
@@ -258,7 +285,6 @@ impl VisitMut for Projection {
                 if proof_mode(&f.sig) {
                     self.record_proof(
                         &f.sig,
-                        !matches!(f.vis, Visibility::Inherited),
                         f.to_token_stream(),
                         f.span(),
                     );
@@ -271,18 +297,12 @@ impl VisitMut for Projection {
         self.scope.pop();
     }
     fn visit_item_fn_mut(&mut self, f: &mut ItemFn) {
-        for attr in &f.attrs {
-            self.roots.extend(identifiers(attr.to_token_stream()));
-        }
         self.signature(&mut f.sig, !matches!(f.vis, Visibility::Inherited));
         self.scope.push(ident_name(&f.sig.ident));
         self.visit_block_mut(&mut f.block);
         self.scope.pop();
     }
     fn visit_impl_item_fn_mut(&mut self, f: &mut ImplItemFn) {
-        for attr in &f.attrs {
-            self.roots.extend(identifiers(attr.to_token_stream()));
-        }
         self.signature(&mut f.sig, !matches!(f.vis, Visibility::Inherited));
         self.scope.push(ident_name(&f.sig.ident));
         self.visit_block_mut(&mut f.block);
@@ -299,7 +319,7 @@ impl VisitMut for Projection {
                     ) || matches!(e, Expr::Unary(u) if matches!(u.op, UnOp::Proof(_)))
                 }
                 Stmt::Item(Item::Fn(f)) if proof_mode(&f.sig) => {
-                    self.record_proof(&f.sig, false, f.to_token_stream(), f.span());
+                    self.record_proof(&f.sig, f.to_token_stream(), f.span());
                     return false;
                 }
                 _ => false,
@@ -368,6 +388,13 @@ impl VisitMut for Projection {
         }
     }
 }
+fn contract_signature(s: &Signature) -> Signature {
+    let mut result = s.clone();
+    result.spec.decreases = None;
+    result.spec.prover = None;
+    result
+}
+
 fn check(request: &Value) -> std::result::Result<Value, String> {
     let before = request["before"].as_str().ok_or("missing before")?;
     let after = request["after"].as_str().ok_or("missing after")?;
@@ -386,19 +413,53 @@ fn check(request: &Value) -> std::result::Result<Value, String> {
     if text(&a) != text(&b) {
         return Err("executable syntax, supplied/public contracts, imports, types, or opaque macros changed".into());
     }
-    // Conservative name-based dependency closure protects the meaning of frozen contracts.
-    let mut roots = pa.roots.clone();
-    let mut dependencies = pa
-        .specs
-        .values()
-        .map(|(_, refs)| refs.clone())
-        .collect::<Vec<_>>();
-    let mut dependency_names = pa
-        .specs
-        .keys()
-        .map(|key| key.rsplit("::").next().unwrap().to_string())
-        .collect::<Vec<_>>();
-    let mut names = identifiers(before.parse().map_err(|_| "invalid frozen tokens")?);
+    // Freeze all original definitions. No name-resolution heuristic may opt a
+    // private spec out of protection (imports/re-exports can hide dependencies).
+    for (key, definition) in &pa.specs {
+        if pb.specs.get(key) != Some(definition) {
+            return Err(format!(
+                "spec definition used by the authoritative contract changed: {key} (all existing specs are frozen)"
+            ));
+        }
+    }
+    let mut new_return_names = BTreeSet::new();
+    for (key, original) in &pa.helper_signatures {
+        let original = contract_signature(original);
+        let mut candidate = contract_signature(pb.helper_signatures.get(key)
+            .ok_or_else(|| format!("existing helper disappeared: {key}"))?);
+        // This sole contract extension is also supported by legacy helper_ensures:
+        // a previously absent postcondition, checked by Verus without new requires.
+        if original.spec.ensures.is_none() {
+            candidate.spec.ensures = None;
+            if let ReturnType::Type(_, _, None, _) = &original.output {
+                if let ReturnType::Type(_, _, binding, _) = &mut candidate.output {
+                    if let Some(binding) = binding.as_ref() {
+                        // Conservatively reserve every identifier in a new return
+                        // pattern, just as for newly declared proof helpers.
+                        new_return_names.extend(identifiers(binding.1.to_token_stream()));
+                    }
+                    *binding = None;
+                }
+            }
+        }
+        if text(&original) != text(&candidate) {
+            return Err(format!("existing helper contract changed: {key}"));
+        }
+    }
+    for (key, original) in &pa.proof_signatures {
+        let candidate = pb.proof_signatures.get(key)
+            .ok_or_else(|| format!("existing proof declaration disappeared: {key}"))?;
+        if text(&contract_signature(original)) != text(&contract_signature(candidate)) {
+            return Err(format!("existing proof contract changed: {key}"));
+        }
+    }
+    // All original/context identifiers are reserved for new helpers. This is
+    // deliberately conservative: a fresh basename cannot shadow an old reference,
+    // including an alias or a name brought in by a glob import. Imports and other
+    // binding declarations outside erased proof regions remain syntax-frozen.
+    let frozen_tokens: TokenStream = before.parse().map_err(|_| "invalid frozen tokens")?;
+    let mut opaque_macros = opaque_macro_names(frozen_tokens.clone());
+    let mut names = identifiers(frozen_tokens);
     for source in request["context"].as_array().unwrap() {
         let source = source.as_str().unwrap();
         let mut f: File = syn::parse_str(source).map_err(|e| format!("context parse: {e}"))?;
@@ -407,42 +468,22 @@ fn check(request: &Value) -> std::result::Result<Value, String> {
         if !p.errors.is_empty() {
             return Err(format!("context parse: {:?}", p.errors));
         }
-        roots.extend(p.roots);
-        for (key, (_, refs)) in p.specs {
-            dependency_names.push(key.rsplit("::").next().unwrap().to_string());
-            dependencies.push(refs);
-        }
-        names.extend(identifiers(
-            source.parse().map_err(|_| "invalid context tokens")?,
-        ));
-    }
-    loop {
-        let old = roots.len();
-        for (name, refs) in dependency_names.iter().zip(&dependencies) {
-            if roots.contains(name) {
-                roots.extend(refs.clone());
-            }
-        }
-        if roots.len() == old {
-            break;
-        }
-    }
-    for (key, (definition, _)) in &pa.specs {
-        if roots.contains(key.rsplit("::").next().unwrap())
-            && pb.specs.get(key).map(|x| &x.0) != Some(definition)
-        {
-            return Err(format!(
-                "spec definition used by the authoritative contract changed: {key}"
-            ));
-        }
+        let context_tokens: TokenStream = source.parse().map_err(|_| "invalid context tokens")?;
+        opaque_macros.extend(opaque_macro_names(context_tokens.clone()));
+        names.extend(identifiers(context_tokens));
     }
     names.extend(
         request["roots"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|s| canonical_path(s.as_str().unwrap())),
+            .flat_map(|s| canonical_path(s.as_str().unwrap()).split("::").map(str::to_owned).collect::<Vec<_>>()),
     );
+    for name in &new_return_names {
+        if names.contains(name) {
+            return Err(format!("new return binding must not shadow a frozen name: {name}"));
+        }
+    }
     for key in pb.proof_names.difference(&pa.proof_names) {
         let name = key.rsplit("::").next().unwrap();
         if !name.starts_with("audit_") || names.contains(name) {
@@ -451,10 +492,18 @@ fn check(request: &Value) -> std::result::Result<Value, String> {
             ));
         }
     }
+    if (!new_return_names.is_empty()
+        || pb.proof_names.difference(&pa.proof_names).next().is_some())
+        && !opaque_macros.is_empty()
+    {
+        return Err(format!(
+            "cannot establish new name bindings across opaque macros: {:?}", opaque_macros
+        ));
+    }
     let frozen_regions = pb
         .spec_spans
         .iter()
-        .filter(|(key, _)| roots.contains(key.rsplit("::").next().unwrap()))
+        .filter(|(key, _)| pa.specs.contains_key(*key))
         .map(|(_, span)| pb.offsets(*span))
         .collect::<BTreeSet<_>>();
     // Do not even rebind macro calls inside a protected definition: its meaning is frozen.
