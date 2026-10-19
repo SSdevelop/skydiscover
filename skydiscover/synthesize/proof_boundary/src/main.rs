@@ -27,12 +27,25 @@ fn proof_mode(s: &Signature) -> bool {
 fn spec_mode(s: &Signature) -> bool {
     matches!(s.mode, FnMode::Spec(_) | FnMode::SpecChecked(_))
 }
+// Canonicalize lookup keys only. Frozen syntax and definition text stay verbatim.
+fn canonical_name(name: &str) -> &str {
+    name.strip_prefix("r#").unwrap_or(name)
+}
+fn ident_name(ident: &Ident) -> String {
+    canonical_name(&ident.to_string()).to_owned()
+}
+fn canonical_path(path: &str) -> String {
+    path.split("::")
+        .map(canonical_name)
+        .collect::<Vec<_>>()
+        .join("::")
+}
 fn identifiers(ts: TokenStream) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for t in ts {
         match t {
             proc_macro2::TokenTree::Ident(i) => {
-                out.insert(i.to_string().trim_start_matches("r#").into());
+                out.insert(ident_name(&i));
             }
             proc_macro2::TokenTree::Group(g) => out.extend(identifiers(g.stream())),
             _ => (),
@@ -95,14 +108,17 @@ impl Projection {
                 .unwrap()
                 .iter()
                 .map(|x| x.as_str().unwrap().to_owned())
-                .collect()
+                .collect::<BTreeSet<String>>()
         };
         let mut lines = vec![0];
         lines.extend(source.match_indices('\n').map(|(i, _)| i + 1));
         Self {
-            protected: strings("protected"),
+            protected: strings("protected")
+                .iter()
+                .map(|s| canonical_path(s))
+                .collect(),
             contract_macros: strings("macros"),
-            roots: strings("roots"),
+            roots: strings("roots").iter().map(|s| canonical_path(s)).collect(),
             specs: BTreeMap::new(),
             spec_spans: BTreeMap::new(),
             proof_names: BTreeSet::new(),
@@ -142,10 +158,11 @@ impl Projection {
         if let Some(protocol) = &s.spec.atomic_spec {
             self.roots.extend(identifiers(protocol.to_token_stream()));
         }
+        let local_name = ident_name(&s.ident);
         let name = self
             .scope
             .iter()
-            .chain(std::iter::once(&s.ident.to_string()))
+            .chain(std::iter::once(&local_name))
             .cloned()
             .collect::<Vec<_>>()
             .join("::");
@@ -154,7 +171,7 @@ impl Projection {
             || self
                 .protected
                 .iter()
-                .any(|p| p.rsplit("::").next() == Some(&s.ident.to_string()));
+                .any(|p| p.rsplit("::").next() == Some(local_name.as_str()));
         if protected {
             let mut contract = s.spec.clone();
             contract.decreases = None;
@@ -184,7 +201,7 @@ impl Projection {
             self.errors
                 .push("conditional termination is outside the proof boundary".into());
         }
-        let name = s.ident.to_string();
+        let name = ident_name(&s.ident);
         self.proof_names
             .insert(format!("{}::{}", self.scope.join("::"), name));
         if spec_mode(s) {
@@ -227,7 +244,7 @@ impl VisitMut for Projection {
         self.items(&mut f.items);
     }
     fn visit_item_mod_mut(&mut self, m: &mut ItemMod) {
-        self.scope.push(m.ident.to_string());
+        self.scope.push(ident_name(&m.ident));
         if let Some((_, items)) = &mut m.content {
             self.items(items);
         }
@@ -258,7 +275,7 @@ impl VisitMut for Projection {
             self.roots.extend(identifiers(attr.to_token_stream()));
         }
         self.signature(&mut f.sig, !matches!(f.vis, Visibility::Inherited));
-        self.scope.push(f.sig.ident.to_string());
+        self.scope.push(ident_name(&f.sig.ident));
         self.visit_block_mut(&mut f.block);
         self.scope.pop();
     }
@@ -267,7 +284,7 @@ impl VisitMut for Projection {
             self.roots.extend(identifiers(attr.to_token_stream()));
         }
         self.signature(&mut f.sig, !matches!(f.vis, Visibility::Inherited));
-        self.scope.push(f.sig.ident.to_string());
+        self.scope.push(ident_name(&f.sig.ident));
         self.visit_block_mut(&mut f.block);
         self.scope.pop();
     }
@@ -424,7 +441,7 @@ fn check(request: &Value) -> std::result::Result<Value, String> {
             .as_array()
             .unwrap()
             .iter()
-            .map(|s| s.as_str().unwrap().to_string()),
+            .map(|s| canonical_path(s.as_str().unwrap())),
     );
     for key in pb.proof_names.difference(&pa.proof_names) {
         let name = key.rsplit("::").next().unwrap();

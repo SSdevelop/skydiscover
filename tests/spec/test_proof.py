@@ -1180,6 +1180,50 @@ def source_overlay(run, source):
     overlay.write_text(json.dumps({"sources": {manifest["config"]["entry"]: source}}))
 
 
+@pytest.mark.parametrize('name', ['valid', 'r#valid'])
+@pytest.mark.parametrize('repair', [False, True], ids=['reject_spec_edit', 'allow_proof'])
+def test_source_spec_dependency_identity_with_real_verus(run, verus, name, repair):
+    # A private target can legally refer to a private predicate. Its contract is
+    # authoritative because the frozen configuration explicitly targets count.
+    impl = run.impl / 'counter.rs'
+    original = impl.read_text().replace('pub fn count', 'fn count')
+    predicate = ('closed spec fn ' + name + '(n: u64, result: u64) -> bool { '
+                 'crate::__audit_spec::counted(n, result) }\n')
+    if repair:
+        source = original.replace('fn count', predicate + 'fn count', 1)
+    else:
+        source = ('use vstd::prelude::*;\nverus! {\n' + predicate +
+                  'fn count(n: u64) -> (result: u64) { 0 }\n}\n')
+    impl.write_text(source)
+    cfg = json.loads(run.verus_config.read_text())
+    cfg['obligations'][0]['ensures'] = f'crate::{name}(n, result)'
+    run.verus_config.write_text(json.dumps(cfg))
+    assert proof.start(run.path)['status'] == 'ready'
+    frozen = proof._bindings(run)
+    baseline = proof.check(run.path)
+    assert baseline['status'] == 'incomplete', baseline
+    session, _ = proof._session(run)
+    if not repair:
+        assert 'postcondition not satisfied' in (session / baseline['diagnostics']).read_text()
+    _, base = overlay_path(run)
+    if repair:
+        candidate = base.replace('while i < n {',
+                                'while i < n invariant i <= n, n <= 1000, decreases n-i, {')
+    else:
+        candidate = base.replace('crate::__audit_spec::counted(n, result)', 'true')
+    assert candidate != base
+    source_overlay(run, candidate)
+    result = proof.check(run.path)
+    if repair:
+        assert result['status'] == 'verified', result
+        assert proof.replay(run.path)['obligations'] == ['counter_returns_n']
+    else:
+        assert result['status'] == 'invalid', result
+        assert 'spec definition used by the authoritative contract changed' in result['message']
+        assert proof.status(run.path)['accepted_attempt'] is None
+    assert proof._bindings(run) == frozen
+
+
 @pytest.mark.parametrize('contract,expected', [
     ('requires n < 100, ensures r == n,', 'verified'),
     ('requires n < 5, ensures r == n,', 'incomplete'),

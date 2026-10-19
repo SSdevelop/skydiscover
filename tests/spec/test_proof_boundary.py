@@ -126,3 +126,92 @@ def test_conditional_termination_cannot_disable_checks(declaration):
     candidate = 'verus! { ' + (declaration if declaration.startswith('fn') else 'fn f(n: u64) {} ' + declaration) + ' }'
     with pytest.raises(SourceError, match='conditional termination'):
         apply_source(source, candidate)
+
+
+@pytest.mark.parametrize('name', ['valid', 'r#valid'])
+@pytest.mark.parametrize('reference', ['valid', 'r#valid'])
+@pytest.mark.parametrize('remove', [False, True], ids=['weaken', 'delete'])
+def test_raw_spec_dependency_is_frozen(name, reference, remove):
+    definition = f'closed spec fn {name}(n: u64, r: u64) -> bool {{ r == n }}'
+    source = ('verus! { ' + definition +
+              f' fn count(n: u64) -> (r: u64) ensures {reference}(n, r), {{ 0 }} }}')
+    assert apply_source(source, source, protected=['count']) == source
+    changed = source.replace(definition, '') if remove else source.replace('r == n', 'true')
+    with pytest.raises(SourceError, match='authoritative contract'):
+        apply_source(source, changed, protected=['count'])
+
+
+@pytest.mark.parametrize('origin', ['public', 'context', 'root', 'raw_root'])
+def test_raw_transitive_spec_dependencies_are_frozen(origin):
+    source = '''verus! {
+mod r#model {
+    closed spec fn r#leaf(n: int) -> bool { n >= 0 }
+    closed spec fn r#middle(n: int) -> bool { leaf(n) }
+}
+}'''
+    authority = 'pub closed spec fn r#valid(n: int) -> bool { model::middle(n) }'
+    options = {}
+    if origin == 'public':
+        source = source[:-1] + authority + '}'
+    elif origin == 'context':
+        options['context'] = ['verus! { ' + authority + ' }']
+    else:
+        options['roots'] = ['middle' if origin == 'root' else 'r#middle']
+    assert apply_source(source, source, **options) == source
+    with pytest.raises(SourceError, match='authoritative contract'):
+        apply_source(source, source.replace('n >= 0', 'true'), **options)
+
+
+@pytest.mark.parametrize('name', ['count', 'r#count'])
+@pytest.mark.parametrize('protected', ['count', 'r#count', 'model::count', 'r#model::r#count'])
+@pytest.mark.parametrize('clause', ['requires n < 10', 'ensures r == n'])
+def test_raw_protected_target_keeps_its_contract(name, protected, clause):
+    source = ('verus! { mod r#model { fn ' + name +
+              '(n: u64) -> (r: u64) requires n < 10, ensures r == n, { n } } }')
+    with pytest.raises(SourceError, match='boundary'):
+        apply_source(source, source.replace(clause, clause.split()[0] + ' true'),
+                     protected=[protected])
+
+
+@pytest.mark.parametrize('name', ['audit_lemma', 'r#audit_lemma'])
+def test_fresh_raw_proof_helper_is_allowed(name):
+    source = 'verus! { fn f() {} }'
+    candidate = source[:-1] + f'proof fn {name}() {{ assert(true); }} }}'
+    assert apply_source(source, candidate) == candidate
+
+
+@pytest.mark.parametrize('old', ['audit_value', 'r#audit_value'])
+@pytest.mark.parametrize('new', ['audit_value', 'r#audit_value'])
+def test_raw_helper_cannot_shadow_an_existing_name(old, new):
+    source = f'verus! {{ spec fn {old}() -> bool {{ true }} fn f() {{}} }}'
+    candidate = source.replace('fn f() {}', f'fn f() {{ spec fn {new}() -> bool {{ false }} }}')
+    with pytest.raises(SourceError, match='fresh audit_'):
+        apply_source(source, candidate)
+
+
+@pytest.mark.parametrize('root', ['audit_value', 'r#audit_value'])
+def test_raw_helper_cannot_shadow_a_configured_root(root):
+    source = 'verus! { fn f() {} }'
+    candidate = source[:-1] + 'spec fn r#audit_value() -> bool { true } }'
+    with pytest.raises(SourceError, match='fresh audit_'):
+        apply_source(source, candidate, roots=[root])
+
+
+def test_raw_duplicate_spec_names_are_ambiguous():
+    source = 'verus! { spec fn valid() -> bool { true } spec fn r#valid() -> bool { false } }'
+    with pytest.raises(SourceError, match='ambiguous spec definition'):
+        apply_source(source, source)
+
+
+def test_raw_protected_spec_macro_keeps_its_binding():
+    source = 'verus! { spec fn r#model() -> Seq<int> { seq![1int] } fn f() {} }'
+    candidate = source.replace('fn f() {}', 'fn f() { proof { assert(true); } }')
+    assert apply_source(source, candidate, roots=['model']) == candidate
+
+
+def test_raw_names_do_not_rewrite_executable_literals():
+    source = 'verus! { fn r#f() { let label = "r#valid"; } }'
+    candidate = source.replace('let label', 'proof { assert(true); } let label')
+    assert apply_source(source, candidate, protected=['f']) == candidate
+    with pytest.raises(SourceError, match='boundary'):
+        apply_source(source, candidate.replace('"r#valid"', '"valid"'), protected=['f'])
