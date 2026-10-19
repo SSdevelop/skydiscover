@@ -22,7 +22,7 @@ _CRATE = Path(__file__).resolve().parents[1] / "proof_boundary"
 _PROOF_MACROS = {"seq", "set", "map", "assert_seqs_equal", "calc"}
 _ATTRIBUTES = {
     "trigger", "auto_trigger", "all_triggers", "no_auto_trigger",
-    "verifier::opaque", "verifier::inline",
+    "verifier::type_invariant", "verifier::opaque", "verifier::inline",
     "verifier::spinoff_prover", "verifier::rlimit", "verifier::broadcast_forall",
 }
 

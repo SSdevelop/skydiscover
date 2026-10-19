@@ -20,7 +20,7 @@ def test_alias_never_exempts_an_original_spec(definition, reference, imports, ed
     candidate = {'weaken': source.replace('r == n', 'true'),
                  'delete': source.replace(predicate, ''),
                  'rename': source.replace('spec fn ' + definition, 'spec fn audit_other')}[edit]
-    with pytest.raises(SourceError, match='all existing specs are frozen'):
+    with pytest.raises(SourceError, match='authoritative contract'):
         apply_source(source, candidate, protected=['count'])
 
 
@@ -29,16 +29,16 @@ def test_module_alias_and_glob_cannot_hide_a_dependency(reference):
     source = '''use self::model as checked; use self::model::*;
 verus! { mod model { pub closed spec fn valid() -> bool { false } }
 fn f() ensures REF(), {} }'''.replace('REF', reference)
-    with pytest.raises(SourceError, match='all existing specs are frozen'):
+    with pytest.raises(SourceError, match='authoritative contract'):
         apply_source(source, source.replace('{ false }', '{ true }'), protected=['f'])
 
 
-def test_cross_file_alias_and_unreferenced_private_spec_are_both_frozen():
+def test_cross_file_alias_protects_dependency_but_unreferenced_spec_can_evolve():
     source = 'verus! { closed spec fn valid() -> bool { false } }'
     context = ['use model::valid as checked; verus! { fn f() ensures checked(), {} }']
-    for others in ([], context):
-        with pytest.raises(SourceError, match='all existing specs are frozen'):
-            apply_source(source, source.replace('false', 'true'), context=others)
+    assert apply_source(source, source.replace('false', 'true'))
+    with pytest.raises(SourceError, match='authoritative contract'):
+        apply_source(source, source.replace('false', 'true'), context=context, protected=['f'])
 
 
 def test_same_basename_in_different_modules_is_not_confused():
@@ -47,8 +47,7 @@ mod a { spec fn valid() -> bool { true } }
 mod b { spec fn valid() -> bool { false } }
 fn f() {} }'''
     assert apply_source(source, source.replace('fn f() {}', 'fn f() { proof { assert(true); } }'))
-    with pytest.raises(SourceError, match='all existing specs are frozen'):
-        apply_source(source, source.replace('{ false }', '{ true }'))
+    assert apply_source(source, source.replace('{ false }', '{ true }'))
 
 
 @pytest.mark.parametrize('extra', [
@@ -81,18 +80,16 @@ def test_private_spec_macros_are_not_rebound():
 
 
 @pytest.mark.parametrize('contract', ['requires n < 10,', 'ensures r <= n,', 'recommends n < 10,'])
-def test_existing_private_contract_cannot_be_rewritten(contract):
+def test_existing_private_contract_can_be_rewritten(contract):
     source = f'verus! {{ fn helper(n: u64) -> (r: u64) {contract} {{ n }} }}'
-    with pytest.raises(SourceError, match='existing helper contract'):
-        apply_source(source, source.replace(contract, contract.split()[0] + ' true,'))
+    assert apply_source(source, source.replace(contract, contract.split()[0] + ' true,'))
 
 
-def test_missing_private_summary_can_be_added_without_new_preconditions():
+def test_private_summary_and_preconditions_can_be_added():
     source = 'verus! { fn helper(n: u64) -> u64 { n } }'
     candidate = source.replace('-> u64', '-> (r: u64) ensures r == n, decreases n,')
     assert apply_source(source, candidate) == candidate
-    with pytest.raises(SourceError, match='existing helper contract'):
-        apply_source(source, candidate.replace('ensures', 'requires n < 10, ensures'))
+    assert apply_source(source, candidate.replace('ensures', 'requires n < 10, ensures'))
 
 
 def test_existing_return_binding_cannot_be_renamed():
@@ -101,19 +98,57 @@ def test_existing_return_binding_cannot_be_renamed():
         apply_source(source, source.replace('(r: u64)', '(x: u64)').replace('r == n', 'x == n'))
 
 
-def test_existing_proof_contract_is_frozen_but_body_and_metric_can_change():
+def test_internal_proof_contract_can_evolve_but_public_contract_is_frozen():
     source = 'verus! { proof fn lemma(n: nat) ensures n == n, {} }'
     candidate = source.replace('ensures n == n, {}', 'ensures n == n, decreases n, { assert(n == n); }')
     assert apply_source(source, candidate) == candidate
+    assert apply_source(source, candidate.replace('ensures n == n', 'requires n > 0, ensures true'))
     with pytest.raises(SourceError, match='existing proof contract'):
-        apply_source(source, candidate.replace('ensures n == n', 'ensures true'))
+        apply_source(source.replace('proof fn', 'pub proof fn'),
+                     candidate.replace('proof fn', 'pub proof fn').replace('ensures n == n', 'ensures true'))
 
 
-def test_new_implicit_type_contract_is_not_a_proof_only_addition():
+def test_new_internal_type_invariant_is_allowed_but_exposed_contract_is_frozen():
     source = 'verus! { struct Cell { value: u64 } impl Cell {} }'
     candidate = source.replace('impl Cell {}', 'impl Cell { #[verifier::type_invariant] spec fn audit_inv(self) -> bool { false } }')
-    with pytest.raises(SourceError, match='unsupported proof attribute'):
+    assert apply_source(source, candidate)
+    with pytest.raises(SourceError, match='implicit type contract'):
+        apply_source(source.replace('struct Cell', 'pub struct Cell'),
+                     candidate.replace('struct Cell', 'pub struct Cell'))
+
+
+@pytest.mark.parametrize('exposure', [
+    'pub fn read(x: Cell) {}',
+    'type Alias = Cell; pub fn read(x: Alias) {}',
+    'use self::Cell as Alias; pub fn read(x: Alias) {}',
+    'pub struct Wrapper { cell: Cell }',
+])
+def test_internal_type_invariant_cannot_change_an_exposed_alias_or_wrapper(exposure):
+    source = 'verus! { struct Cell { value: u64 } impl Cell {} ' + exposure + ' }'
+    candidate = source.replace('impl Cell {}', '''impl Cell {
+        #[verifier::type_invariant] spec fn audit_inv(self) -> bool { false }
+    }''')
+    with pytest.raises(SourceError, match='implicit type contract'):
         apply_source(source, candidate)
+
+
+def test_glob_reexport_chain_and_constant_do_not_hide_contract_dependencies():
+    source = '''verus! {
+mod model { closed spec fn valid() -> bool { false } }
+mod export { use super::model::valid as checked; }
+use self::export::*;
+const EXPECTED: bool = checked();
+fn f() ensures EXPECTED, {}
+}'''
+    with pytest.raises(SourceError, match='authoritative contract'):
+        apply_source(source, source.replace('{ false }', '{ true }'), protected=['f'])
+
+
+def test_alias_of_internal_predicate_can_evolve_when_not_authoritative():
+    source = '''use self::valid as checked;
+verus! { closed spec fn valid(n: int) -> bool { n >= 0 }
+fn helper(n: int) requires checked(n), {} }'''
+    assert apply_source(source, source.replace('n >= 0', 'n > 0'))
 
 
 def test_fresh_spec_and_proof_helpers_remain_supported():

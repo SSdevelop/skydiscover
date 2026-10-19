@@ -116,7 +116,9 @@ impl ToTokens for ContractBody {
 struct Projection {
     protected: BTreeSet<String>,
     contract_macros: BTreeSet<String>,
-    // Every pre-existing spec definition stays immutable, including private predicates.
+    // Conservative dependency closure includes import aliases and re-exports.
+    roots: BTreeSet<String>,
+    dependencies: BTreeMap<String, BTreeSet<String>>,
     specs: BTreeMap<String, String>,
     spec_spans: BTreeMap<String, Span>,
     helper_signatures: BTreeMap<String, Signature>,
@@ -127,6 +129,7 @@ struct Projection {
     columns: Vec<Vec<usize>>,
     errors: Vec<String>,
     scope: Vec<String>,
+    impl_types: Vec<BTreeSet<String>>,
 }
 impl Projection {
     fn new(source: &str, request: &Value) -> Self {
@@ -146,6 +149,16 @@ impl Projection {
                 .map(|s| canonical_path(s))
                 .collect(),
             contract_macros: strings("macros"),
+            roots: strings("roots")
+                .iter()
+                .flat_map(|s| {
+                    canonical_path(s)
+                        .split("::")
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+            dependencies: BTreeMap::new(),
             specs: BTreeMap::new(),
             spec_spans: BTreeMap::new(),
             helper_signatures: BTreeMap::new(),
@@ -164,6 +177,7 @@ impl Projection {
                 .collect(),
             errors: Vec::new(),
             scope: Vec::new(),
+            impl_types: Vec::new(),
         }
     }
     fn offsets(&self, span: Span) -> (usize, usize) {
@@ -184,6 +198,9 @@ impl Projection {
         *value = None;
     }
     fn signature(&mut self, s: &mut Signature, public: bool) {
+        if let Some(protocol) = &s.spec.atomic_spec {
+            self.roots.extend(identifiers(protocol.to_token_stream()));
+        }
         let local_name = ident_name(&s.ident);
         let name = self
             .scope
@@ -192,15 +209,15 @@ impl Projection {
             .cloned()
             .collect::<Vec<_>>()
             .join("::");
-        let protected = public
-            || self.protected.contains(&name)
-            || self
-                .protected
-                .iter()
-                .any(|p| p.rsplit("::").next() == Some(local_name.as_str()));
-        if !protected {
-            // A missing private postcondition may be supplied, but no existing
-            // contract or input restriction may be changed. Compare it below.
+        // Targets are file-local module/type paths supplied by the adapter. A
+        // matching basename in another scope does not make a helper authoritative.
+        let protected = public || self.protected.contains(&name);
+        if protected {
+            self.roots
+                .extend(identifiers(contract_signature(s).to_token_stream()));
+        } else {
+            // Internal contracts are checked at every caller and at the body by
+            // Verus; they are proof obligations, not new public assumptions.
             if self.helper_signatures.insert(name, s.clone()).is_some() {
                 self.errors.push("ambiguous helper definition".into());
             }
@@ -222,22 +239,44 @@ impl Projection {
         self.erase(&mut s.spec.decreases);
         self.erase(&mut s.spec.prover);
     }
-    fn record_proof(&mut self, s: &Signature, definition: TokenStream, span: Span) {
+    fn record_proof(&mut self, s: &Signature, public: bool, definition: TokenStream, span: Span) {
         if s.spec.decreases.as_ref().is_some_and(|d| d.when.is_some()) {
             self.errors
                 .push("conditional termination is outside the proof boundary".into());
         }
         let name = ident_name(&s.ident);
+        if public
+            || self
+                .protected
+                .iter()
+                .any(|p| p.rsplit("::").next() == Some(name.as_str()))
+        {
+            self.roots.insert(name.clone());
+            self.roots
+                .extend(identifiers(contract_signature(s).to_token_stream()));
+        }
         self.proof_names
             .insert(format!("{}::{}", self.scope.join("::"), name));
         if spec_mode(s) {
+            self.dependencies
+                .entry(name.clone())
+                .or_default()
+                .extend(identifiers(definition.clone()));
+            // Type invariants are implicit contracts of any exposed containing
+            // type. Private implementation types may evolve under Verus checks.
+            if text(&definition).contains("verifier :: type_invariant") {
+                if let Some(types) = self.impl_types.last() {
+                    for ty in types {
+                        self.dependencies
+                            .entry(ty.clone())
+                            .or_default()
+                            .insert(name.clone());
+                    }
+                }
+            }
             let key = format!("{}::{}", self.scope.join("::"), name);
             self.spec_spans.insert(key.clone(), span);
-            if self
-                .specs
-                .insert(key, definition.to_string())
-                .is_some()
-            {
+            if self.specs.insert(key, definition.to_string()).is_some() {
                 self.errors.push("ambiguous spec definition".into());
             }
         }
@@ -255,6 +294,7 @@ impl Projection {
                 if proof_mode(&f.sig) {
                     self.record_proof(
                         &f.sig,
+                        !matches!(f.vis, Visibility::Inherited),
                         f.to_token_stream(),
                         f.span(),
                     );
@@ -267,6 +307,95 @@ impl Projection {
     }
 }
 impl VisitMut for Projection {
+    fn visit_item_const_mut(&mut self, item: &mut ItemConst) {
+        if !matches!(item.vis, Visibility::Inherited) {
+            self.roots.insert(ident_name(&item.ident));
+        }
+        self.dependencies
+            .entry(ident_name(&item.ident))
+            .or_default()
+            .extend(identifiers(item.to_token_stream()));
+        visit_mut::visit_item_const_mut(self, item);
+    }
+    fn visit_item_static_mut(&mut self, item: &mut ItemStatic) {
+        if !matches!(item.vis, Visibility::Inherited) {
+            self.roots.insert(ident_name(&item.ident));
+        }
+        self.dependencies
+            .entry(ident_name(&item.ident))
+            .or_default()
+            .extend(identifiers(item.to_token_stream()));
+        visit_mut::visit_item_static_mut(self, item);
+    }
+    fn visit_impl_item_const_mut(&mut self, item: &mut ImplItemConst) {
+        if !matches!(item.vis, Visibility::Inherited) {
+            self.roots.insert(ident_name(&item.ident));
+        }
+        self.dependencies
+            .entry(ident_name(&item.ident))
+            .or_default()
+            .extend(identifiers(item.to_token_stream()));
+        visit_mut::visit_impl_item_const_mut(self, item);
+    }
+    fn visit_item_trait_mut(&mut self, item: &mut ItemTrait) {
+        let name = ident_name(&item.ident);
+        self.dependencies
+            .entry(name.clone())
+            .or_default()
+            .extend(identifiers(item.to_token_stream()));
+        if !matches!(item.vis, Visibility::Inherited) {
+            self.roots.insert(name);
+        }
+        visit_mut::visit_item_trait_mut(self, item);
+    }
+    fn visit_item_use_mut(&mut self, item: &mut ItemUse) {
+        // Connect every identifier in an import in both directions. This safely
+        // over-approximates grouped aliases, chains, module aliases and re-exports
+        // without pretending to implement Rust's full name resolver.
+        let names = identifiers(item.tree.to_token_stream());
+        for name in &names {
+            self.dependencies
+                .entry(name.clone())
+                .or_default()
+                .extend(names.clone());
+        }
+        if !matches!(item.vis, Visibility::Inherited) {
+            self.roots.extend(names);
+        }
+    }
+    fn visit_item_struct_mut(&mut self, item: &mut ItemStruct) {
+        let name = ident_name(&item.ident);
+        self.dependencies
+            .entry(name.clone())
+            .or_default()
+            .extend(identifiers(item.to_token_stream()));
+        if !matches!(item.vis, Visibility::Inherited) {
+            self.roots.insert(name);
+        }
+        visit_mut::visit_item_struct_mut(self, item);
+    }
+    fn visit_item_enum_mut(&mut self, item: &mut ItemEnum) {
+        let name = ident_name(&item.ident);
+        self.dependencies
+            .entry(name.clone())
+            .or_default()
+            .extend(identifiers(item.to_token_stream()));
+        if !matches!(item.vis, Visibility::Inherited) {
+            self.roots.insert(name);
+        }
+        visit_mut::visit_item_enum_mut(self, item);
+    }
+    fn visit_item_type_mut(&mut self, item: &mut ItemType) {
+        let name = ident_name(&item.ident);
+        self.dependencies
+            .entry(name.clone())
+            .or_default()
+            .extend(identifiers(item.to_token_stream()));
+        if !matches!(item.vis, Visibility::Inherited) {
+            self.roots.insert(name);
+        }
+        visit_mut::visit_item_type_mut(self, item);
+    }
     fn visit_file_mut(&mut self, f: &mut File) {
         self.items(&mut f.items);
     }
@@ -279,12 +408,27 @@ impl VisitMut for Projection {
     }
     fn visit_item_impl_mut(&mut self, i: &mut ItemImpl) {
         // Preserve impl headers, including trait identities and generic bounds.
-        self.scope.push(text(&i.self_ty));
+        // Generic arguments and raw identifier spelling do not change the type's
+        // lookup path (e.g. Buffer<T>::read is configured as Buffer::read).
+        let ty = match i.self_ty.as_ref() {
+            Type::Path(p) if p.qself.is_none() => p
+                .path
+                .segments
+                .iter()
+                .map(|s| ident_name(&s.ident))
+                .collect::<Vec<_>>()
+                .join("::"),
+            _ => text(&i.self_ty),
+        };
+        self.scope.push(ty);
+        self.impl_types
+            .push(identifiers(i.self_ty.to_token_stream()));
         i.items.retain_mut(|item| {
             if let ImplItem::Fn(f) = item {
                 if proof_mode(&f.sig) {
                     self.record_proof(
                         &f.sig,
+                        !matches!(f.vis, Visibility::Inherited),
                         f.to_token_stream(),
                         f.span(),
                     );
@@ -295,14 +439,21 @@ impl VisitMut for Projection {
             true
         });
         self.scope.pop();
+        self.impl_types.pop();
     }
     fn visit_item_fn_mut(&mut self, f: &mut ItemFn) {
+        for attr in &f.attrs {
+            self.roots.extend(identifiers(attr.to_token_stream()));
+        }
         self.signature(&mut f.sig, !matches!(f.vis, Visibility::Inherited));
         self.scope.push(ident_name(&f.sig.ident));
         self.visit_block_mut(&mut f.block);
         self.scope.pop();
     }
     fn visit_impl_item_fn_mut(&mut self, f: &mut ImplItemFn) {
+        for attr in &f.attrs {
+            self.roots.extend(identifiers(attr.to_token_stream()));
+        }
         self.signature(&mut f.sig, !matches!(f.vis, Visibility::Inherited));
         self.scope.push(ident_name(&f.sig.ident));
         self.visit_block_mut(&mut f.block);
@@ -319,7 +470,12 @@ impl VisitMut for Projection {
                     ) || matches!(e, Expr::Unary(u) if matches!(u.op, UnOp::Proof(_)))
                 }
                 Stmt::Item(Item::Fn(f)) if proof_mode(&f.sig) => {
-                    self.record_proof(&f.sig, f.to_token_stream(), f.span());
+                    self.record_proof(
+                        &f.sig,
+                        !matches!(f.vis, Visibility::Inherited),
+                        f.to_token_stream(),
+                        f.span(),
+                    );
                     return false;
                 }
                 _ => false,
@@ -394,6 +550,14 @@ fn contract_signature(s: &Signature) -> Signature {
     result.spec.prover = None;
     result
 }
+fn internal_signature(s: &Signature) -> Signature {
+    let mut result = contract_signature(s);
+    result.spec.requires = None;
+    result.spec.ensures = None;
+    result.spec.recommends = None;
+    result.spec.default_ensures = None;
+    result
+}
 
 fn check(request: &Value) -> std::result::Result<Value, String> {
     let before = request["before"].as_str().ok_or("missing before")?;
@@ -413,44 +577,36 @@ fn check(request: &Value) -> std::result::Result<Value, String> {
     if text(&a) != text(&b) {
         return Err("executable syntax, supplied/public contracts, imports, types, or opaque macros changed".into());
     }
-    // Freeze all original definitions. No name-resolution heuristic may opt a
-    // private spec out of protection (imports/re-exports can hide dependencies).
-    for (key, definition) in &pa.specs {
-        if pb.specs.get(key) != Some(definition) {
-            return Err(format!(
-                "spec definition used by the authoritative contract changed: {key} (all existing specs are frozen)"
-            ));
-        }
+    let mut roots = pa.roots.clone();
+    let mut dependencies = pa.dependencies.clone();
+    // Include newly attached type invariants, which can otherwise silently add
+    // preconditions to a frozen public signature that mentions the owning type.
+    for (name, refs) in &pb.dependencies {
+        dependencies
+            .entry(name.clone())
+            .or_default()
+            .extend(refs.clone());
     }
     let mut new_return_names = BTreeSet::new();
     for (key, original) in &pa.helper_signatures {
-        let original = contract_signature(original);
-        let mut candidate = contract_signature(pb.helper_signatures.get(key)
-            .ok_or_else(|| format!("existing helper disappeared: {key}"))?);
-        // This sole contract extension is also supported by legacy helper_ensures:
-        // a previously absent postcondition, checked by Verus without new requires.
-        if original.spec.ensures.is_none() {
-            candidate.spec.ensures = None;
-            if let ReturnType::Type(_, _, None, _) = &original.output {
-                if let ReturnType::Type(_, _, binding, _) = &mut candidate.output {
-                    if let Some(binding) = binding.as_ref() {
-                        // Conservatively reserve every identifier in a new return
-                        // pattern, just as for newly declared proof helpers.
-                        new_return_names.extend(identifiers(binding.1.to_token_stream()));
-                    }
-                    *binding = None;
+        let original = internal_signature(original);
+        let mut candidate = internal_signature(
+            pb.helper_signatures
+                .get(key)
+                .ok_or_else(|| format!("existing helper disappeared: {key}"))?,
+        );
+        if let ReturnType::Type(_, _, None, _) = &original.output {
+            if let ReturnType::Type(_, _, binding, _) = &mut candidate.output {
+                if let Some(binding) = binding.as_ref() {
+                    // Conservatively reserve every identifier in a new return
+                    // pattern, just as for newly declared proof helpers.
+                    new_return_names.extend(identifiers(binding.1.to_token_stream()));
                 }
+                *binding = None;
             }
         }
         if text(&original) != text(&candidate) {
             return Err(format!("existing helper contract changed: {key}"));
-        }
-    }
-    for (key, original) in &pa.proof_signatures {
-        let candidate = pb.proof_signatures.get(key)
-            .ok_or_else(|| format!("existing proof declaration disappeared: {key}"))?;
-        if text(&contract_signature(original)) != text(&contract_signature(candidate)) {
-            return Err(format!("existing proof contract changed: {key}"));
         }
     }
     // All original/context identifiers are reserved for new helpers. This is
@@ -460,28 +616,86 @@ fn check(request: &Value) -> std::result::Result<Value, String> {
     let frozen_tokens: TokenStream = before.parse().map_err(|_| "invalid frozen tokens")?;
     let mut opaque_macros = opaque_macro_names(frozen_tokens.clone());
     let mut names = identifiers(frozen_tokens);
-    for source in request["context"].as_array().unwrap() {
-        let source = source.as_str().unwrap();
+    for context in request["context"].as_array().unwrap() {
+        // Each file has its own authoritative targets. Keep accepting strings for
+        // callers with a single shared target scope.
+        let mut context_request = request.clone();
+        let source = if let Some(source) = context.as_str() {
+            source
+        } else {
+            context_request["protected"] = context["protected"].clone();
+            context["source"].as_str().ok_or("missing context source")?
+        };
         let mut f: File = syn::parse_str(source).map_err(|e| format!("context parse: {e}"))?;
-        let mut p = Projection::new(source, request);
+        let mut p = Projection::new(source, &context_request);
         p.visit_file_mut(&mut f);
         if !p.errors.is_empty() {
             return Err(format!("context parse: {:?}", p.errors));
+        }
+        roots.extend(p.roots);
+        for (name, refs) in p.dependencies {
+            dependencies.entry(name).or_default().extend(refs);
         }
         let context_tokens: TokenStream = source.parse().map_err(|_| "invalid context tokens")?;
         opaque_macros.extend(opaque_macro_names(context_tokens.clone()));
         names.extend(identifiers(context_tokens));
     }
-    names.extend(
-        request["roots"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|s| canonical_path(s.as_str().unwrap()).split("::").map(str::to_owned).collect::<Vec<_>>()),
-    );
+    // Glob imports preserve basenames; any re-export renames are connected above.
+    // Unknown expansions can conceal names entirely. Keep old definitions frozen
+    // in that case rather than dropping an edge.
+    if !opaque_macros.is_empty() {
+        roots.extend(
+            pa.specs
+                .keys()
+                .chain(pa.proof_signatures.keys())
+                .map(|key| key.rsplit("::").next().unwrap().to_owned()),
+        );
+    }
+    loop {
+        let previous = roots.len();
+        for (name, refs) in &dependencies {
+            if roots.contains(name) {
+                roots.extend(refs.clone());
+            }
+        }
+        if previous == roots.len() {
+            break;
+        }
+    }
+    for (key, definition) in &pa.specs {
+        if roots.contains(key.rsplit("::").next().unwrap()) && pb.specs.get(key) != Some(definition)
+        {
+            return Err(format!(
+                "spec definition used by the authoritative contract changed: {key}"
+            ));
+        }
+    }
+    for (key, original) in &pa.proof_signatures {
+        let candidate = pb
+            .proof_signatures
+            .get(key)
+            .ok_or_else(|| format!("existing proof declaration disappeared: {key}"))?;
+        let protected = roots.contains(key.rsplit("::").next().unwrap());
+        let project = if protected {
+            contract_signature
+        } else {
+            internal_signature
+        };
+        if text(&project(original)) != text(&project(candidate)) {
+            return Err(format!("existing proof contract changed: {key}"));
+        }
+    }
+    names.extend(request["roots"].as_array().unwrap().iter().flat_map(|s| {
+        canonical_path(s.as_str().unwrap())
+            .split("::")
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    }));
     for name in &new_return_names {
         if names.contains(name) {
-            return Err(format!("new return binding must not shadow a frozen name: {name}"));
+            return Err(format!(
+                "new return binding must not shadow a frozen name: {name}"
+            ));
         }
     }
     for key in pb.proof_names.difference(&pa.proof_names) {
@@ -492,18 +706,27 @@ fn check(request: &Value) -> std::result::Result<Value, String> {
             ));
         }
     }
-    if (!new_return_names.is_empty()
-        || pb.proof_names.difference(&pa.proof_names).next().is_some())
+    for key in pb.specs.keys().filter(|key| !pa.specs.contains_key(*key)) {
+        if roots.contains(key.rsplit("::").next().unwrap()) {
+            return Err(format!(
+                "new spec changes an authoritative or implicit type contract: {key}"
+            ));
+        }
+    }
+    if (!new_return_names.is_empty() || pb.proof_names.difference(&pa.proof_names).next().is_some())
         && !opaque_macros.is_empty()
     {
         return Err(format!(
-            "cannot establish new name bindings across opaque macros: {:?}", opaque_macros
+            "cannot establish new name bindings across opaque macros: {:?}",
+            opaque_macros
         ));
     }
     let frozen_regions = pb
         .spec_spans
         .iter()
-        .filter(|(key, _)| pa.specs.contains_key(*key))
+        .filter(|(key, _)| {
+            pa.specs.contains_key(*key) && roots.contains(key.rsplit("::").next().unwrap())
+        })
         .map(|(_, span)| pb.offsets(*span))
         .collect::<BTreeSet<_>>();
     // Do not even rebind macro calls inside a protected definition: its meaning is frozen.

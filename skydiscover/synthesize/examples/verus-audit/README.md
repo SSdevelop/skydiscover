@@ -54,9 +54,19 @@ Paths may refer to the frozen model, vstd, or std. The runner appends these impo
 shadowing definitions become compiler errors. The evaluator build must use the same bindings.
 
 Strategy review triggers are `attempts_per_review` (default 10) and `max_stalled` (3).
+The interval counts checks that reach proof verification. Adapter/preparation errors, tool
+failures, and timeouts remain recorded attempts but do not consume this allowance. Stalls track
+repeated verifier failure sets (including cycles), ignoring line shifts and verified-function
+totals. New failure sets indicate movement, not accepted proof evidence.
 `max_attempts` is accepted as a legacy alias for the review interval, including existing frozen
 sessions; it no longer caps total proof search. Per-invocation limits remain `timeout_secs` (120)
 and `rlimit` (10).
+The proof planner begins with a plan covering every authoritative obligation and its shared
+dependencies. The coder then makes repeated proof edits and full verifier checks within that plan,
+continuing across milestones. Local failed checks do not force replanning; a substantive strategy
+impasse or a required review checkpoint does. New sessions seed `proof/plan.md` with every configured
+obligation; resumed sessions preserve their plan and history for the planner to update.
+
 Install Verus separately; set `SKYDISCOVER_VERUS` if it is not on PATH. Z3 must be available through
 the Verus installation, PATH, or `VERUS_Z3_PATH`. The runner pins the verifier version and installed
 verifier, library, and solver hashes. It controls verification flags, including `--no-cheating`,

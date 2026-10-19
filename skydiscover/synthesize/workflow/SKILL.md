@@ -29,6 +29,10 @@ The lead sequences the work, resolves handoffs, records decisions, and reports t
 does a role's job itself; each role writes its own files.
 
 The auditor can run its own Verificable Rust Loop with `proof-planner.md` and `proof-coder.md`.
+The proof planner first plans complete coverage of all authoritative obligations, including shared
+invariants, helper contracts, and proof dependencies. The coder executes that plan through repeated
+edits and Verus checks; ordinary local failures stay with the coder. Replanning is for a substantive
+strategy impasse, missing coverage, or a required review checkpoint.
 Record `audit_mode: test` (default) or `audit_mode: proof` in task.md from the initial requirements,
 and `audit_target` when the implementation has more than one possible target. This setting is
 independent of `checked_by: proof`. C++ routes to test auditing regardless of the request; Rust
@@ -458,8 +462,8 @@ and the box of the architecture figure it plays.
 | `isa` | 2 | Coding Agent (code + proof) | on a stall, propose a new design from the failure log |
 | `evaluator` | 2 | Evaluator | correctness mode: write the trusted reference and the tests; performance mode: run the scored benchmark, name the bottleneck, write the checkpoint |
 | `auditor` | 2, 3 | Auditor | find reward hacks and close them with tests; in Phase 3, review the selected candidate under one production lens, then attack it: construct independent contract-breaking executions |
-| `proof-planner` | 2, 3 | Auditor | plan proof steps from frozen obligations and Verus diagnostics; return design or spec blockers through the auditor |
-| `proof-coder` | 2, 3 | Auditor | add proof-only overlays to a frozen Rust implementation and run Verus; never change executable code or the specification |
+| `proof-planner` | 2, 3 | Auditor | plan complete coverage of frozen obligations and their shared proof dependencies; revise at strategy impasses and review checkpoints |
+| `proof-coder` | 2, 3 | Auditor | execute the complete proof plan through repeated proof-only edits and Verus checks; repair local failures within the plan |
 | `critic` | 2 | Critic | attribute measurements to design choices; direct the next iteration |
 
 ## Core Commands

@@ -14,8 +14,40 @@ fn helper(n: u64) -> (r: u64)
 { n }
 }'''
     annotated = source.replace('ensures r <= n,', 'ensures r == n,').replace('limit: 10', 'limit: 20')
-    with pytest.raises(SourceError, match="existing helper contract"):
-        apply_source(source, annotated)
+    assert apply_source(source, annotated) == annotated
+
+
+@pytest.mark.parametrize('generic', [False, True])
+def test_protected_method_does_not_freeze_namesakes(generic):
+    ty = 'Api<T>' if generic else 'Api'
+    impl = 'impl<T>' if generic else 'impl'
+    source = f'''verus! {{
+struct {ty} {{}}
+{impl} {ty} {{ fn read(n: u64) -> (r: u64) ensures r == n, {{ n }} }}
+fn read(n: u64) -> (r: u64) ensures r <= n, {{ n }}
+mod internal {{ fn read(n: u64) -> (r: u64) ensures r <= n, {{ n }} }}
+}}'''
+    candidate = source.replace('r <= n', 'r == n')
+    assert apply_source(source, candidate, protected=['Api::read']) == candidate
+    with pytest.raises(SourceError, match='boundary'):
+        apply_source(source, candidate.replace('r == n', 'true', 1), protected=['Api::read'])
+
+
+def test_scoped_raw_target_and_context_keep_authoritative_dependencies():
+    source = '''verus! {
+mod r#api { fn r#read(n: u64) -> (r: u64) ensures r == n, { n } }
+mod helper { fn read(n: u64) -> (r: u64) ensures r <= n, { n } }
+}'''
+    candidate = source.replace('r <= n', 'r == n')
+    assert apply_source(source, candidate, protected=['api::read']) == candidate
+    with pytest.raises(SourceError, match='boundary'):
+        apply_source(source, source.replace('r == n', 'true'), protected=['api::read'])
+
+    model = 'verus! { closed spec fn valid(n: int) -> bool { n >= 0 } }'
+    context = [{'source': 'verus! { fn read(n: u64) requires valid(n as int), {} }',
+                'protected': ['read']}]
+    with pytest.raises(SourceError, match='authoritative contract'):
+        apply_source(model, model.replace('n >= 0', 'true'), context=context)
 
 
 @pytest.mark.parametrize('edit', [
@@ -49,8 +81,7 @@ pub closed spec fn identity(n: int) -> bool { intermediate(n) }
     with pytest.raises(SourceError, match='authoritative contract'):
         apply_source(source, source.replace('n >= 0', 'true'))
     source = source[:source.index('pub closed')] + '}'
-    with pytest.raises(SourceError, match='authoritative contract'):
-        apply_source(source, source.replace('n >= 0', 'true'))
+    assert 'true' in apply_source(source, source.replace('n >= 0', 'true'))
     with pytest.raises(SourceError, match='authoritative contract'):
         apply_source(source, source.replace('n >= 0', 'true'), roots=['intermediate'])
     with pytest.raises(SourceError, match='authoritative contract'):
@@ -165,7 +196,7 @@ mod r#model {
 
 
 @pytest.mark.parametrize('name', ['count', 'r#count'])
-@pytest.mark.parametrize('protected', ['count', 'r#count', 'model::count', 'r#model::r#count'])
+@pytest.mark.parametrize('protected', ['model::count', 'r#model::r#count'])
 @pytest.mark.parametrize('clause', ['requires n < 10', 'ensures r == n'])
 def test_raw_protected_target_keeps_its_contract(name, protected, clause):
     source = ('verus! { mod r#model { fn ' + name +

@@ -217,6 +217,18 @@ through `spec.proof feedback` and handed to the lead. `specification/verus.json`
 spec-builder and is frozen for the audit. Existing `synthesis/audit/<finding-id>/` evidence remains
 separate from session directories.
 
+`state.json` keeps total `attempts` separately from `proof_checks`, which counts only checks
+that reached proof verification. Review cadence uses `proof_checks`; `stalled` tracks repeated
+failure sets. Each attempt's `result.json` stores a `progress_observation` when available.
+These observations are scheduling hints, never accepted evidence. Sessions created before this
+accounting scheme start a new measurement window on their next check, retaining frozen inputs,
+plans, and all historical attempt artifacts.
+
+`proof/plan.md` starts with the complete obligation inventory. The planner develops its Strategy,
+Obligation coverage, Milestones and verification order, Coder scope, and Attempts and decisions.
+The coder performs repeated checks within that plan; review checkpoints and substantive strategy
+changes return to the planner. Resuming a session preserves its existing plan and attempt history.
+
 - `hooks/process_guard.py` (PreToolUse on Bash): agents may stop only processes this session
   started. `pkill`, `killall`, and `kill` fed by `pgrep`/`pidof` are refused, and so is
   `kill <pid>` for a pid outside the session (a shared server, another user's job).

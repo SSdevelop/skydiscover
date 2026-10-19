@@ -5,6 +5,11 @@
 - Codex installed, authenticated, and available on `PATH`, with your desired model configured.
 - Verus with its matching Rust toolchain and solver. Tested Verus commit:
   `8dea4a2196ebf99449fe2f141a2fb30acae3f17c`.
+- Cargo on `PATH`. Build the pinned proof-boundary parser once (later proof checks build offline):
+
+  ```bash
+  cargo build --locked --manifest-path skydiscover/synthesize/proof_boundary/Cargo.toml
+  ```
 
 ## 2. Configure the workload
 

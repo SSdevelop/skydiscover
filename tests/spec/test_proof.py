@@ -575,11 +575,12 @@ def test_review_persists_and_proof_continues_past_old_budget(run, verus, legacy)
         manifest["config"]["max_attempts"] = manifest["config"].pop("attempts_per_review")
         manifest["manifest_hash"] = proof._hash({k: v for k, v in manifest.items() if k != "manifest_hash"})
         proof._write(session / "manifest.json", manifest)
+    invariant(run, "invariant true, decreases n - i,")
     assert proof.check(run.path)["status"] == "incomplete"
     with pytest.raises(proof.ProofError, match="unchanged"):
         proof.check(run.path)
     assert proof.start(run.path)["attempts"] == 1
-    invariant(run, "invariant true,")
+    invariant(run, "invariant i >= 0, decreases n - i,")
     second = proof.check(run.path)
     assert second["attempts"] == 2 and second["next_action"] == "revise proof strategy"
     assert not (run.audit / "completed.json").exists()
@@ -1029,6 +1030,7 @@ def test_stalled_strategy_must_be_revised(run, verus):
     cfg["max_stalled"] = 1
     run.verus_config.write_text(json.dumps(cfg))
     proof.start(run.path)
+    invariant(run, "invariant true, decreases n - i,")
     proof.check(run.path)
     invariant(run)
     with pytest.raises(proof.ProofError, match="planner must revise"):
@@ -1038,6 +1040,137 @@ def test_stalled_strategy_must_be_revised(run, verus):
         "Add a bounded counter invariant and decreasing measure.\n"
     )
     assert proof.check(run.path)["status"] == "verified"
+
+
+def test_failure_progress_and_cycles_survive_resume(run, verus, monkeypatch):
+    cfg = json.loads(run.verus_config.read_text())
+    cfg.pop('max_attempts', None)
+    cfg['attempts_per_review'] = 100
+    run.verus_config.write_text(json.dumps(cfg))
+    proof.start(run.path)
+    session, _ = proof._session(run)
+    plan = (session / 'proof/plan.md').read_bytes()
+
+    def check(errors, expression, verified):
+        monkeypatch.setattr(proof, '_verify', lambda *args: {
+            'status': 'incomplete', 'message': 'proof failed', 'verified_count': verified,
+            'progress_observation': proof._failure_observation(
+                f'error: assertion failed\n  --> lib.rs:10:5\n10 | {expression}\n', errors),
+        })
+        # Distinct overlays; the mocked verifier controls the observed failures.
+        attempt = proof.status(run.path)['attempts']
+        (session / 'proof/overlay.json').write_text(json.dumps({'sources': {'counter.rs': str(attempt)}}))
+        return proof.check(run.path)
+
+    first = check(8, 'assert(a);', 10)
+    assert first['stalled'] == 1
+    # Repairs within a function and restructuring count despite decreasing success totals.
+    assert check(5, 'assert(a);', 10)['stalled'] == 0
+    assert check(6, 'assert(b);', 2)['stalled'] == 0
+    assert check(5, 'assert(b);', 3)['stalled'] == 0
+    assert proof.start(run.path)['proof_checks'] == 4
+    # Easy extra lemmas cannot disguise unchanged failures, nor can cycling old outcomes.
+    assert check(5, 'assert(b);', 30)['stalled'] == 1
+    assert check(8, 'assert(a);', 31)['stalled'] == 2
+    last = check(5, 'assert(b);', 32)
+    assert last['stalled'] == 3 and last['next_action'] == 'revise proof strategy'
+    assert (session / 'proof/plan.md').read_bytes() == plan
+    with pytest.raises(proof.ProofError, match='review due'):
+        check(4, 'assert(c);', 33)
+
+
+def test_diagnostics_ignore_line_shifts_but_notice_repaired_failures():
+    diagnostic = 'error: assertion failed\n --> lib.rs:10:5\n10 | assert(x);\n   | ^^^\n'
+    shifted = diagnostic.replace(':10:5', ':200:9').replace('10 |', '200 |')
+    assert proof._failure_observation(diagnostic, 1) == proof._failure_observation(shifted, 1)
+    assert proof._failure_observation(diagnostic * 2, 1) != proof._failure_observation(diagnostic, 1)
+
+
+@pytest.mark.parametrize('failure', ['invalid', 'blocked', 'tool_error', 'unsupported', 'timeout', 'preparation'])
+def test_nonproof_failures_do_not_spend_review_allowance(run, verus, monkeypatch, failure):
+    cfg = json.loads(run.verus_config.read_text())
+    cfg['attempts_per_review'] = 2
+    cfg['max_stalled'] = 2
+    run.verus_config.write_text(json.dumps(cfg))
+    proof.start(run.path)
+    session, _ = proof._session(run)
+    real_verify = proof._verify
+
+    def fail(*args):
+        if failure == 'invalid':
+            raise SourceError('adapter rejected annotation')
+        if failure == 'blocked':
+            raise OSError('tool unavailable')
+        return {'status': 'incomplete' if failure in {'timeout', 'preparation'} else failure,
+                'message': failure, 'verified_count': 0, 'progress_observation': None}
+
+    monkeypatch.setattr(proof, '_verify', fail)
+    for i in range(4):
+        (session / 'proof/overlay.json').write_text(json.dumps({'sources': {'counter.rs': str(i)}}))
+        result = proof.check(run.path)
+        assert result['proof_checks'] == result['stalled'] == 0
+    assert proof.start(run.path)['attempts'] == 4
+    monkeypatch.setattr(proof, '_verify', real_verify)
+    invariant(run)
+    result = proof.check(run.path)
+    assert result['status'] == 'verified' and result['proof_checks'] == 1
+
+
+def test_legacy_progress_migration_preserves_history(run, verus):
+    proof.start(run.path)
+    proof.check(run.path)
+    session, _ = proof._session(run)
+    original = {p: p.read_bytes() for p in (session / 'attempts').rglob('*') if p.is_file()}
+    state = proof._read(session / 'state.json')
+    for key in ('progress_version', 'proof_checks', 'reviewed_at_proof_check', 'seen_failures'):
+        state.pop(key)
+    state.update(stalled=99, best_verified=999)
+    proof._write(session / 'state.json', state)
+    invariant(run)
+    result = proof.check(run.path)
+    assert result['status'] == 'verified' and result['attempts'] == 2
+    assert result['proof_checks'] == 1
+    assert all(p.read_bytes() == contents for p, contents in original.items())
+
+
+def test_file_scoped_private_contracts_remain_protected(run, verus):
+    configure_target(run, {
+        'lib.rs': 'mod api; mod internal;',
+        'api.rs': 'use vstd::prelude::*; verus! { fn read(n: u64) -> u64 { n } }',
+        'internal.rs': '''use vstd::prelude::*;
+verus! { fn read(n: u64) -> (r: u64) ensures r <= n, { n } }''',
+    }, 'lib.rs', 'api::read', 'result == n', obligation_file='api.rs')
+    proof.start(run.path)
+    session, manifest = proof._session(run)
+    views, issues = proof._views(session, manifest, {'insertions': []})
+    assert not issues
+    helper = views['internal.rs'].replace('r <= n', 'r == n')
+    (session / 'proof/overlay.json').write_text(json.dumps({'sources': {'internal.rs': helper}}))
+    assert proof.check(run.path)['status'] == 'verified'
+    assert proof.replay(run.path)['obligations'] == ['required']
+    with pytest.raises(SourceError, match='boundary'):
+        proof._views(session, manifest, {'sources': {
+            'api.rs': views['api.rs'].replace('result == n', 'true'),
+        }})
+
+
+def test_private_method_target_with_free_namesake(run, verus):
+    configure_target(run, {'lib.rs': '''use vstd::prelude::*;
+verus! {
+struct Api<T> { value: T }
+impl<T> Api<T> { fn read(n: u64) -> u64 { n } }
+fn read(n: u64) -> (r: u64) ensures r <= n, { n }
+}'''}, 'lib.rs', 'Api::read', 'result == n')
+    proof.start(run.path)
+    session, manifest = proof._session(run)
+    views, issues = proof._views(session, manifest, {'insertions': []})
+    assert not issues
+    source_overlay(run, views['lib.rs'].replace('r <= n', 'r == n'))
+    assert proof.check(run.path)['status'] == 'verified'
+    with pytest.raises(SourceError, match='boundary'):
+        proof._views(session, manifest, {'sources': {
+            'lib.rs': views['lib.rs'].replace('result == n', 'true'),
+        }})
 
 
 def test_codex_generator_installs_proof_roles(tmp_path):
@@ -1103,6 +1236,8 @@ def test_verifier_failures_never_create_accepted_evidence(
     result = proof.check(run.path)
     assert result["status"] == expected, result
     assert result["attempts"] == 1
+    assert result["proof_checks"] == 0
+    assert result["stalled"] == 0
     with pytest.raises(proof.ProofError, match="accepted evidence"):
         proof.evidence(run.path)
 
@@ -1225,9 +1360,10 @@ def test_source_spec_dependency_identity_with_real_verus(run, verus, name, repai
 
 
 @pytest.mark.parametrize('contract,expected', [
-    ('requires n < 100, ensures r == n,', 'invalid'),
-    ('requires n < 5, ensures r == n,', 'invalid'),
-    ('requires n < 100, ensures r == 0,', 'invalid'),
+    ('requires n < 100, ensures r == n,', 'verified'),
+    ('requires n < 5, ensures r == n,', 'incomplete'),
+    ('requires false, ensures r == n,', 'incomplete'),
+    ('requires n < 100, ensures r == 0,', 'incomplete'),
 ])
 def test_source_helper_contracts_are_checked_at_body_and_callers(run, verus, contract, expected):
     configure_target(run, {'lib.rs': '''use vstd::prelude::*;
@@ -1243,8 +1379,12 @@ fn count(n: u64) -> u64 { helper(n) }
     source_overlay(run, base.replace('ensures r <= n,', contract))
     result = proof.check(run.path)
     assert result['status'] == expected, result
-    assert 'existing helper contract changed' in result['message']
-    assert proof.status(run.path)['accepted_attempt'] is None
+    if expected == 'verified':
+        assert proof.replay(run.path)['obligations'] == ['required']
+    else:
+        session, _ = proof._session(run)
+        diagnostics = (session / result['diagnostics']).read_text()
+        assert ('precondition' if 'n < 5' in contract or 'requires false' in contract else 'postcondition') in diagnostics
 
 
 def test_source_mode_invariant_replacement_and_seq_lemma(run, verus):
@@ -1285,7 +1425,7 @@ crate::audit_counter! { impl Counter { count(n) { verus_exec_expr! {{
     assert proof.replay(run.path)['obligations'] == ['count']
 
 
-@pytest.mark.parametrize('bound,expected', [(10, 'invalid'), (5, 'invalid')])
+@pytest.mark.parametrize('bound,expected', [(10, 'verified'), (5, 'incomplete')])
 def test_source_internal_type_invariant_is_checked_at_construction(run, verus, bound, expected):
     configure_target(run, {'lib.rs': '''use vstd::prelude::*;
 verus! {
@@ -1304,8 +1444,9 @@ fn count(n: u64) -> u64 { let cell = Cell { value: n }; cell.value }
     source_overlay(run, base.replace('self.value < 100', f'self.value < {bound}'))
     result = proof.check(run.path)
     assert result['status'] == expected, result
-    assert 'all existing specs are frozen' in result['message']
-    assert proof.status(run.path)['accepted_attempt'] is None
+    if expected == 'incomplete':
+        session, _ = proof._session(run)
+        assert 'invariant' in (session / result['diagnostics']).read_text()
 
 
 # These workloads deliberately share no implementation, API names, or experiment setup with
@@ -1314,13 +1455,13 @@ _GENERAL_BOUNDARY_CASES = [
     pytest.param(
         {'lib.rs': '''use vstd::prelude::*;
 verus! {
-fn walk(n: u64) -> (r: u64) decreases n, {
+fn walk(n: u64) -> (r: u64) ensures r <= n, decreases n, {
     if n == 0 { 0 } else { walk(n - 1) + 1 }
 }
 pub fn evaluate(n: u64) -> u64 { walk(n) }
 }'''},
         'evaluate', 'lib.rs', 'result == n',
-        ('decreases n,', 'ensures r == n, decreases n + 1,'),
+        ('ensures r <= n, decreases n,', 'ensures r == n, decreases n + 1,'),
         ('walk(n - 1) + 1', 'walk(n - 1)'),
         id='recursive-arithmetic',
     ),
@@ -1329,12 +1470,12 @@ pub fn evaluate(n: u64) -> u64 { walk(n) }
 verus! {
 pub struct Envelope<T> { pub value: T }
 impl<T> Envelope<T> {
-    fn extract(self) -> (r: T) { self.value }
+    fn extract(self) -> (r: T) ensures true, { self.value }
     pub fn unwrap(self) -> T { self.extract() }
 }
 }'''},
         'Envelope::unwrap', 'lib.rs', 'result == self.value',
-        ('fn extract(self) -> (r: T)', 'fn extract(self) -> (r: T) ensures r == self.value,'),
+        ('ensures true,', 'ensures r == self.value,'),
         ('self.extract()', 'self.unwrap()'),
         id='generic-container',
     ),
@@ -1342,6 +1483,7 @@ impl<T> Envelope<T> {
         {'lib.rs': 'pub mod buffer;', 'buffer.rs': '''use vstd::prelude::*;
 verus! {
 fn last(xs: &Vec<u64>) -> (r: Option<u64>)
+    ensures r.is_some() == (xs.len() > 0),
 {
     if xs.len() == 0 { None } else { Some(xs[xs.len() - 1]) }
 }
@@ -1349,8 +1491,8 @@ pub fn peek(xs: &Vec<u64>) -> Option<u64> { last(xs) }
 }'''},
         'buffer::peek', 'buffer.rs',
         '(xs.len() == 0 ==> result.is_none()) && (xs.len() > 0 ==> result == Some(xs[xs.len() as int - 1]))',
-        ('fn last(xs: &Vec<u64>) -> (r: Option<u64>)',
-         'fn last(xs: &Vec<u64>) -> (r: Option<u64>) ensures (xs.len() == 0 ==> r.is_none()) && (xs.len() > 0 ==> r == Some(xs[xs.len() as int - 1])),'),
+        ('ensures r.is_some() == (xs.len() > 0),',
+         'ensures (xs.len() == 0 ==> r.is_none()) && (xs.len() > 0 ==> r == Some(xs[xs.len() as int - 1])),'),
         ('Some(xs[xs.len() - 1])', 'Some(0)'),
         id='multi-file-buffer',
     ),
@@ -1400,3 +1542,61 @@ def test_source_new_helper_checks_frozen_spec_macro_context(run, verus):
     result = proof.check(run.path)
     assert result["status"] == "invalid", result
     assert "new name bindings across opaque macros" in result["message"]
+
+
+def test_complete_plan_supports_local_repairs_across_obligations_and_resume(run, verus):
+    source = '''use vstd::prelude::*;
+verus! {
+pub fn first(n: u64) -> u64 {
+    let mut i = 0u64;
+    while i < n { i = i + 1; }
+    i
+}
+pub fn second(n: u64) -> u64 {
+    let mut i = 0u64;
+    while i < n { i = i + 1; }
+    i
+}
+}'''
+    configure_target(run, {'lib.rs': source}, 'lib.rs', 'first', 'result == n')
+    cfg = json.loads(run.verus_config.read_text())
+    cfg['obligations'] = [
+        {'id': 'first_returns_n', 'function': 'first', 'ensures': 'result == n'},
+        {'id': 'second_returns_n', 'function': 'second', 'ensures': 'result == n'},
+    ]
+    run.verus_config.write_text(json.dumps(cfg))
+    assert proof.start(run.path)['status'] == 'ready'
+    session, manifest = proof._session(run)
+    plan_path = session / 'proof/plan.md'
+    plan = plan_path.read_text()
+    for obligation in cfg['obligations']:
+        assert f"`{obligation['id']}`" in plan
+        assert f"`{obligation['function']}`" in plan
+    plan_path.write_text(plan + '''
+Both counters represent the number of completed increments. For each loop, preserve i <= n
+and use n - i as the termination measure. Prove first, then second; completion requires both.
+''')
+    planned = plan_path.read_bytes()
+    frozen = proof._bindings(run)
+    assert proof.check(run.path)['status'] == 'incomplete'
+    _, base = overlay_path(run)
+    loop = 'while i < n {'
+    annotated_loop = 'while i < n invariant i <= n, decreases n-i, {'
+    source_overlay(run, base.replace(loop, annotated_loop, 1))
+    partial = proof.check(run.path)
+    assert partial['status'] == 'incomplete'
+    assert partial['next_action'] == 'repair proof'
+    assert not (run.audit / 'completed.json').exists()
+
+    # Resumption and moving to another planned obligation do not need a fresh plan or session.
+    resumed = proof.start(run.path)
+    assert resumed['session'] == manifest['session']
+    assert resumed['attempts'] == 2
+    assert plan_path.read_bytes() == planned
+    source_overlay(run, base.replace(loop, annotated_loop))
+    result = proof.check(run.path)
+    assert result['status'] == 'verified', result
+    assert result['attempts'] == 3
+    assert plan_path.read_bytes() == planned
+    assert proof.replay(run.path)['obligations'] == ['first_returns_n', 'second_returns_n']
+    assert proof._bindings(run) == frozen

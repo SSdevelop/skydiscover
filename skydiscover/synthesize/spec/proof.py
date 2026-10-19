@@ -26,6 +26,7 @@ from .proof_source import (
     SourceError,
     apply_overlay,
     base_source,
+    contract_function,
     macro_functions,
     spec_attachment,
     tokens,
@@ -341,6 +342,36 @@ def _tool() -> tuple[str, dict]:
     return binary, identity
 
 
+def _initial_plan(manifest: dict) -> str:
+    """Seed complete obligation coverage; the planner supplies the actual proof strategy."""
+    cfg = manifest["config"]
+    coverage = "\n".join(
+        f"- `{o['id']}`: `{o['function']}` in `{o.get('file', cfg['entry'])}`. "
+        "Supporting facts/dependencies: to plan. Verification evidence: pending."
+        for o in cfg.get("obligations", [])
+    ) or "Read proof/obligations.json when proof configuration is available."
+    return (
+        "# Proof plan\n\n"
+        f"Session: `{manifest['session']}`.\n\n"
+        "Goal: verify every authoritative obligation against the frozen implementation and "
+        "specification. Preserve the supplied requires/ensures and executable behavior.\n\n"
+        "## Strategy\n\n"
+        "Plan the concrete-to-abstract relation, shared invariants, helper contracts, lemmas, "
+        "and any ghost resource ownership. Explain initialization and preservation. Mark "
+        "unresolved design questions explicitly; proposed facts are not proof evidence.\n\n"
+        "## Obligation coverage\n\n" + coverage + "\n\n"
+        "## Milestones and verification order\n\n"
+        "Order shared dependencies and complete target proofs into a route covering every "
+        "obligation above. State the verification evidence needed for each milestone.\n\n"
+        "## Coder scope\n\n"
+        "After the planner fills in this plan, execute it through repeated edits and full "
+        "Verus checks. Repair local failures and continue across planned milestones. Return "
+        "for complete verification, a required strategy review, a substantive strategy "
+        "impasse, or a diagnosed blocker.\n\n"
+        "## Attempts and decisions\n"
+    )
+
+
 def start(run_dir: Path) -> dict:
     run = Run(run_dir)
     with _lock(run):
@@ -393,6 +424,10 @@ def start(run_dir: Path) -> dict:
             "attempts": 0,
             "stalled": 0,
             "best_verified": 0,
+            "progress_version": 2,
+            "proof_checks": 0,
+            "reviewed_at_proof_check": 0,
+            "seen_failures": [],
             "accepted_attempt": None,
             "message": routing["reason"],
         }
@@ -408,7 +443,7 @@ def start(run_dir: Path) -> dict:
         _write(session / "state.json", state)
         _write(session / "proof" / "overlay.json", {"insertions": []})
         (session / "proof" / "plan.md").write_text(
-            "# Proof plan\n\n## Strategy\n\n## Next brief\n\n## Attempts and decisions\n",
+            _initial_plan(manifest),
             encoding="utf-8",
         )
         _result(session, manifest, state)
@@ -471,10 +506,11 @@ def _views(session: Path, manifest: dict, overlay: dict) -> tuple[dict, list[str
         if not path.is_file() or path.suffix != ".rs":
             raise SourceError("proof insertions must name a frozen Rust file")
         by_file.setdefault(name, []).append({k: v for k, v in insertion.items() if k != "file"})
-    views, issues = {}, []
+    views, issues, protected = {}, [], {}
     for path in sorted(root.rglob("*.rs")):
         name = path.relative_to(root).as_posix()
         source = path.read_text()
+        protected[name] = []
         # Build scripts execute as ordinary Rust before verification; they are frozen inputs,
         # not proof targets unless explicitly selected.
         if (
@@ -487,6 +523,8 @@ def _views(session: Path, manifest: dict, overlay: dict) -> tuple[dict, list[str
         obligations = [o for o in cfg["obligations"] if o.get("file", cfg["entry"]) == name]
         try:
             base = base_source(source, [o for o in obligations if "macro" not in o])
+            protected[name] = [contract_function(base, o["function"])
+                               for o in obligations if "macro" not in o]
             for obligation in obligations:
                 if "macro" in obligation:
                     sites = macro_functions(base, obligation["macro"])
@@ -520,11 +558,12 @@ def _views(session: Path, manifest: dict, overlay: dict) -> tuple[dict, list[str
             spec_source = spec_file.read_text()
             specification_context.append(spec_source)
             roots.update(t.text.removeprefix("r#") for t in tokens(spec_source))
-        context = list(views.values()) + specification_context
+        context = [{"source": source, "protected": protected[name]}
+                   for name, source in views.items()] + specification_context
         for name, source in sources.items():
             views[name] = apply_source(
                 views[name], source, roots=roots, context=context,
-                protected=tuple(o["function"] for o in cfg["obligations"]),
+                protected=protected[name],
                 macros=tuple({o["macro"] for o in cfg["obligations"] if "macro" in o}),
             )
     for obligation in cfg["obligations"]:
@@ -781,6 +820,32 @@ def _command(binary: str, project: Path, entry: Path, cfg: dict, destination: Pa
     return command, prefix, issues
 
 
+def _failure_observation(stderr: str, errors: int) -> dict:
+    """A scheduling hint, never proof evidence. Ignore line shifts and success totals.
+
+    Verus may reveal more errors as repairs proceed. A new failure set is movement,
+    not necessarily an improvement; repeated sets (including cycles) suggest review.
+    Keep duplicate diagnostics so removing one of several equal errors is visible.
+    """
+    failures = []
+    for block in re.split(r"(?m)^(?=error(?:\[|:)|note:|warning:)", stderr):
+        lines = block.splitlines()
+        if not lines or not re.match(r"error(?:\[|:)", lines[0]):
+            continue
+        if lines[0].startswith("error: aborting due to"):
+            continue
+        # The first displayed source line identifies the failing expression without
+        # embedding attempt paths, line numbers, solver timing or caret alignment.
+        location = re.search(r"(?m)^\s*-->\s+(.+?):\d+:\d+", block)
+        source = re.search(r"(?m)^\s*\d+\s*\|\s?(.*)$", block)
+        failures.append([
+            lines[0].strip(),
+            Path(location[1]).name if location else "",
+            " ".join(source[1].split()) if source else "",
+        ])
+    return {"errors": errors, "failures": sorted(failures)}
+
+
 def _verify(session: Path, manifest: dict, overlay: dict, destination: Path) -> dict:
     binary, identity = _tool()
     if identity != manifest["toolchain"]:
@@ -818,6 +883,7 @@ def _verify(session: Path, manifest: dict, overlay: dict, destination: Path) -> 
     _write(destination / "invocation.json", invocation)
     (destination / "diagnostics.txt").write_text(invocation["stdout"] + invocation["stderr"])
     verified = 0
+    observation = None
     if invocation["timed_out"]:
         outcome, message = "incomplete", "verifier timed out; no correctness conclusion"
     else:
@@ -857,6 +923,18 @@ def _verify(session: Path, manifest: dict, overlay: dict, destination: Path) -> 
                 and doc.get("verus") == manifest["toolchain"]["version"]
             )
             outcome = "verified" if passed else "incomplete"
+            # Parsing/typechecking, adapter preparation, timeouts and tool crashes
+            # are not unsuccessful proof searches and must not spend review budget.
+            if (not issues and covered and invocation["returncode"] in (0, 1)
+                    and all(d.get("verification-results", {}).get("is-verifying-entire-crate") is True
+                            and not d["verification-results"].get("encountered-vir-error")
+                            and type(d["verification-results"].get("errors")) is int
+                            and d["verification-results"]["errors"] >= 0
+                            for d in documents)):
+                observation = _failure_observation(
+                    invocation["stderr"],
+                    sum(d["verification-results"]["errors"] for d in documents),
+                )
             message = (
                 "all required obligations verified"
                 if passed
@@ -878,6 +956,7 @@ def _verify(session: Path, manifest: dict, overlay: dict, destination: Path) -> 
         "status": outcome,
         "message": message,
         "verified_count": verified,
+        "progress_observation": observation if outcome in {"verified", "incomplete"} else None,
         "source_digest": _digest(project),
         "spec_digest": _digest(specification),
         "preparation_issues": issues,
@@ -911,6 +990,15 @@ def check(run_dir: Path) -> dict:
             raise ProofError("attempt history and state disagree; refusing to reset attempt accounting")
         if state["status"] == "verified":
             return _result(session, manifest, state)
+        if state.get("progress_version") != 2:
+            # The old all-time verified-count metric cannot establish stalls. Start
+            # a new measurement window without changing frozen inputs or history.
+            state.update(progress_version=2, proof_checks=0, reviewed_at_proof_check=0,
+                         seen_failures=[], stalled=0, reviewed_at_attempt=state["attempts"])
+        if any(type(state.get(k)) is not int or state[k] < 0
+               for k in ("proof_checks", "reviewed_at_proof_check")) or not (
+                   state["reviewed_at_proof_check"] <= state["proof_checks"] <= state["attempts"]):
+            raise ProofError("invalid proof-review accounting")
         # Old frozen sessions keep their configuration bytes and counters. Their former
         # total cap now means a strategy-review interval, just as it does for new sessions.
         review_every = cfg.get("attempts_per_review", cfg.get("max_attempts", 10))
@@ -919,11 +1007,14 @@ def check(run_dir: Path) -> dict:
             raise ProofError("invalid proof-review accounting")
         overlay = _read(session / "proof" / "overlay.json")
         plan_hash = _digest(session / "proof" / "plan.md")
-        if state["stalled"] >= cfg["max_stalled"] or state["attempts"] - reviewed_at >= review_every:
+        if (state["stalled"] >= cfg["max_stalled"]
+                or state["proof_checks"] - state["reviewed_at_proof_check"] >= review_every):
             if plan_hash == state.get("plan_hash"):
                 raise ProofError("proof strategy review due; the proof planner must revise plan.md")
             state["stalled"] = 0
             state["reviewed_at_attempt"] = state["attempts"]
+            state["reviewed_at_proof_check"] = state["proof_checks"]
+            state["seen_failures"] = []
         fingerprint = _hash(overlay)
         previous = state.get("last_overlay")
         if fingerprint == previous and state["status"] in {
@@ -962,13 +1053,21 @@ def check(run_dir: Path) -> dict:
         state["diagnostics"] = (
             str(diagnostics.relative_to(session)) if diagnostics.is_file() else None
         )
-        progress = result["verified_count"] > state["best_verified"]
-        state["stalled"] = 0 if progress else state["stalled"] + 1
+        observation = result.get("progress_observation")
+        state["last_check_counted"] = observation is not None and result["status"] in {"incomplete", "verified"}
+        if state["last_check_counted"]:
+            state["proof_checks"] += 1
+            fingerprint = _hash(observation)
+            seen = state["seen_failures"]
+            state["stalled"] = 0 if seen and fingerprint not in seen else state["stalled"] + 1
+            if fingerprint not in seen:
+                seen.append(fingerprint)
+        # Retain this historical statistic for compatibility, never for scheduling.
         state["best_verified"] = max(state["best_verified"], result["verified_count"])
         state["next_action"] = (
             "revise proof strategy"
             if state["stalled"] >= cfg["max_stalled"]
-            or state["attempts"] - state.get("reviewed_at_attempt", 0) >= review_every
+            or state["proof_checks"] - state["reviewed_at_proof_check"] >= review_every
             else "repair proof"
         )
         if result["status"] == "verified":

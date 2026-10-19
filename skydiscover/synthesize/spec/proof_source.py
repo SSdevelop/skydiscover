@@ -250,7 +250,15 @@ def functions(source: str) -> dict[str, tuple[int, int, int]]:
                                 flat.append(part)
                         if "for" in flat:
                             flat = flat[flat.index("for") + 1 :]
-                        name = next((x for x in flat if re.fullmatch(r"[A-Za-z_]\w*", x)), "impl")
+                        # Keep the type's path (but not generic arguments), matching
+                        # the parsed proof boundary's file-local lookup keys.
+                        path = []
+                        for part in flat:
+                            if part == "::" or (part != "where" and re.fullmatch(r"(?:r#)?[A-Za-z_]\w*", part)):
+                                path.append(part)
+                            else:
+                                break
+                        name = "".join(path) or "impl"
                     else:
                         name = head[0]
                     walk(j + 1, ps[j], [*scope, name])
@@ -311,6 +319,24 @@ def verification_view(source: str) -> str:
     return "\n".join(chunks) + "\nuse vstd::prelude::*;\n"
 
 
+def contract_function(source: str, requested: str) -> str:
+    """Resolve a configured crate path to its unique file-local declaration."""
+    canonical = lambda name: "::".join(part.removeprefix("r#") for part in name.split("::"))
+    target = canonical(requested)
+    names = functions(source)
+    matches = [name for name in names if target == canonical(name)]
+    if not matches:
+        matches = [name for name in names if target.endswith("::" + canonical(name))]
+        # A crate-level module prefix may be absent in a separate source file.
+        # Prefer the most specific declaration, never an unrelated free namesake.
+        if matches:
+            depth = max(name.count("::") for name in matches)
+            matches = [name for name in matches if name.count("::") == depth]
+    if len(matches) != 1:
+        raise SourceError(f"cannot uniquely place frozen contract: {requested}")
+    return matches[0]
+
+
 def base_source(implementation: str, obligations: list[dict]) -> str:
     """Attach frozen Verus clauses to frozen function headers; no executable token is replaced."""
     implementation = verification_view(implementation)
@@ -320,10 +346,7 @@ def base_source(implementation: str, obligations: list[dict]) -> str:
     names = set()
     for obligation in obligations:
         requested = obligation["function"]
-        matches = [name for name in fs if requested == name or requested.endswith("::" + name)]
-        if len(matches) != 1:
-            raise SourceError(f"cannot uniquely place frozen contract: {requested}")
-        name = matches[0]
+        name = contract_function(implementation, requested)
         if name in names or name not in fs:
             raise SourceError(f"duplicate or missing obligation function: {name}")
         names.add(name)

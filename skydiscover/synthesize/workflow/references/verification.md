@@ -18,6 +18,16 @@ use the same correspondence rules. Contract-macro bodies use the documented
 `impl Type { method(args) { body } }` grammar; other macro payloads remain opaque and fixed.
 This is a language-adapter restriction, not a restriction to a particular workload.
 
+The proof planner's first plan covers all authoritative obligations, their shared invariants and
+helper contracts, and an ordered set of proof milestones. The coder iterates through those
+milestones with full verification after coherent edits; an ordinary failed check stays within
+that work. The auditor requests replanning for a substantive strategy impasse, missing coverage,
+or the runner's review checkpoint. Milestones do not weaken the completion condition: every
+required obligation must verify. Review intervals count checks that reach proof verification;
+adapter/preparation failures, tool errors, and timeouts do not spend that allowance. Repeated
+verifier failure sets, including cycles, trigger stall review; verified-function totals do not.
+These observations guide scheduling only. Whole-crate acceptance and replay remain in force.
+
 The proof worker writes annotated-source overlays (legacy insertion overlays remain replayable).
 The pinned Verus parser checks that executable syntax and authoritative/public contracts stay
 unchanged. Private helper contracts and internal proof predicates may evolve; Verus checks their

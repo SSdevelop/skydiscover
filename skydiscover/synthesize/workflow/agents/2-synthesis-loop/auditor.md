@@ -56,15 +56,22 @@ an adapter limitation must be reported as such, never as a proof that the task i
 1. Inspect `spec.proof status <run>`. Keep blocked or unsupported sessions in this audit while
    diagnosing the cause. An already verified session needs `spec.proof replay <run>`.
    For a new ready session, run `python3 <scripts>/run_verus.py --run <run>` once to obtain actual
-   baseline build/verification diagnostics before asking the proof planner to choose repairs.
+   baseline build/verification diagnostics before asking the proof planner for a complete plan.
 2. Run `proof-planner.md` with the session path, frozen obligations, and previous diagnostics.
-   Then run `proof-coder.md` with the updated proof brief. Verus is invoked by the runner, not an
-   LLM reviewer. The proof coder may revise private helper contracts, internal proof invariants,
+   Its initial plan must cover every authoritative obligation, the concrete-to-abstract relation,
+   shared proof dependencies, and an ordered route to complete verification. Review that coverage
+   before dispatching the coder; planning only the currently failing annotation is insufficient.
+   Then run `proof-coder.md` with the complete plan and scope to iterate through its milestones.
+   The runner invokes Verus for every check. The proof coder may revise private helper contracts, internal proof invariants,
    and proof bodies through parsed source overlays; every caller/body remains checked by Verus.
    The supplied requires/ensures, their model dependencies, and executable code stay fixed.
    Missing helper summaries or internal invariants are proof work, not implementation blockers.
-3. Read the runner's result. For a repairable incomplete proof, return diagnostics to the proof
-   planner. On `next_action: revise proof strategy`, have it revise the plan before another attempt.
+3. Let the coder perform repeated edit/verify/repair cycles within the plan. An ordinary failed
+   check or completed intermediate milestone does not trigger a planner handoff. If the coder
+   returns a repairable incomplete proof and the plan still applies, resume the coder with that
+   plan and the diagnostics. Bring the planner back for a substantive strategy impasse, missing
+   obligation coverage, or `next_action: revise proof strategy`; at a checkpoint it must revise
+   the plan before another attempt. Preserve the complete obligation map on every revision.
    Continue this inner loop until verification succeeds or a concrete implementation blocker is
    established. `attempts_per_review` (legacy `max_attempts`) triggers a strategy review, never
    exhaustion or a new implementation round. Preserve the total attempt history across reviews
