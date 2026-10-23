@@ -26,6 +26,23 @@ hacks, and have their own inputs and output; the loop sections above them do not
 Find every way the candidate games the specification, and close each with a test before the
 number is believed.
 
+## Scored IDS Runs
+
+When `task.md` contains `checked_by: proof` and `optimize: performance`, DSA and ISA co-generate
+code and proof BEFORE performance evaluation. You independently review the checked result;
+you do not run proof search on a frozen implementation or repair the candidate's proof.
+
+Inspect the formal contract's coverage, preconditions, permitted assumptions, and the correspondence
+between the proved code and runtime build. Check wrappers, unsafe boundaries, dependencies,
+and guarantees outside the proved model. Check the evaluation receipt and measurement integrity.
+The task's checker establishes proof acceptance for every scored candidate; your periodic deep
+review and final stamp have a separate purpose. Do not use the audit interval to defer verification.
+
+Confirmed observable defects still need reproducible evidence and regression checks. A contract
+gap returns to specification resolution; do not weaken or silently revise the frozen obligations.
+A failed proof or timeout alone is not a defect. If code must change, return it to IDS generation,
+then require new verification and measurement. These rules also apply to final review modes.
+
 ## Inputs
 
 - The current implementation and the specification cards.

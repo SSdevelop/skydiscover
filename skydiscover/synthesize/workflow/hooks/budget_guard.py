@@ -171,7 +171,10 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
     return (
         f"Iteration budget: {done} of {n} iterations are finished. Do not end your turn: the run "
         f"is not finished. Continue with iteration {done + 1} now (planner if a design decision is "
-        "due, then coding agent, evaluator in performance mode with its checkpoint, auditor, critic), "
+        "due, then candidate generation: DSA/ISA co-generate code and proof for checked_by: proof, "
+        "otherwise coding-agent. Run full correctness checks before the performance evaluator and "
+        "its checkpoint on scored tasks, then auditor when due and critic; proof-only tasks skip "
+        "performance evaluation), "
         "and block on each role until it reports instead of waiting. If you truly need the user's "
         "input, first run `python3 -m skydiscover.synthesize.spec.run pause "
         f"{run} --reason \"<your question>\"`, then ask and end your turn. If the loop must end "

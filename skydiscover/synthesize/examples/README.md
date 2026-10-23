@@ -62,6 +62,17 @@ exits 0 only when the proof holds. Write it for your prover; the one in `proved-
 
 Keep any reference solution out of the task directory; the agent must not see it.
 
+To optimize a formally checked implementation for performance, also add `optimize: performance`
+to the task's front matter. Supply the scored workload/configuration and a benchmark adapter that
+builds the runtime from the proved candidate through the declared extraction/compilation route.
+Pin tools and dependencies and check the pins in the proof suite. The suite must cover every
+required obligation and the runtime correspondence; an independently written fast implementation
+does not inherit a model's proof. DSA/ISA then co-generate code and proof before the evaluator runs
+`spec.evaluation run <run> --config '<JSON object>' -- <benchmark command>`. Scripts use
+`SKYDISCOVER_IMPL`, `SKYDISCOVER_INTERFACE`, and `SKYDISCOVER_RUN` from the checked snapshot;
+build outputs go to `SKYDISCOVER_EVALUATION` or a temporary directory. The existing distributed
+store example is proof-only; adding a flag alone does not provide a runtime benchmark.
+
 ### README template
 
 ```markdown

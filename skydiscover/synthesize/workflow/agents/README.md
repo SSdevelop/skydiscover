@@ -11,8 +11,8 @@ agents/
 └── 2-synthesis-loop/
     ├── planner.md          Planner: the design for the next iteration
     ├── coding-agent.md     Coding Agent: one well-scoped, tested change
-    ├── dsa.md              Coding Agent, proof-driven: one step of code and proof
-    ├── isa.md              Coding Agent, proof-driven: a new design when the DSA stalls
+    ├── dsa.md              Coding Agent, proof-driven: co-develop code and proof before scoring
+    ├── isa.md              Coding Agent, proof-driven: revise proof strategy or inform the planner
     ├── evaluator.md        Evaluator: the tests and the benchmark
     ├── auditor.md          Auditor: turns every reward hack into a test; reviews the final candidate
     └── critic.md           Critic: guidance for the next iteration

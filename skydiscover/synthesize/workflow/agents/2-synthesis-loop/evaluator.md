@@ -24,6 +24,13 @@ yours.
 
 ## Correctness Mode
 
+For scored IDS setup, use the supplied immutable formal specification and checker. Fill missing
+checker/build integration from those fixed obligations, including tool/dependency pins and the
+runtime correspondence checks; never relax the contract to admit the candidate. Supply the
+benchmark adapter under `evaluator/benchmark/`, with build output outside candidate inputs.
+The formal check does not need a reference implementation or mutant. The behavioral-test
+procedure below applies to additional integration requirements outside that proof model.
+
 ### Goal
 
 A requirement is real only if a test can falsify it. Implement the finder's probe sketch to that
@@ -91,6 +98,33 @@ or advisory) and the evidence to the lead. `run finish` saves the suite into the
 A test that cannot fail a broken implementation is not a test. Check it before you leave it.
 
 ## Performance Mode
+
+### Scored IDS prerequisite
+
+When `task.md` has `checked_by: proof` and `optimize: performance`, DSA supplies the complete
+implementation AND proof. Never measure first and ask the auditor to prove it later.
+For each scored candidate (and any candidate held-out measurement), run:
+
+```bash
+python3 -m skydiscover.synthesize.spec.evaluation run <run> --config '{"threads": 4}' \
+  -- bash synthesis/evaluator/benchmark/score.sh
+```
+
+Use the actual task command and configuration. The command runs from a snapshot of the run's
+inputs, after the full proof/integration suite passes. `SKYDISCOVER_IMPL`, `SKYDISCOVER_INTERFACE`,
+and `SKYDISCOVER_RUN` point inside that snapshot; `SKYDISCOVER_EVALUATION` is for build output.
+Use run-relative script paths and the declared extraction/build route to the proved implementation.
+Keep build outputs outside the snapshot. Stop writers before evaluation. The helper checks input
+digests before and after both stages; it is not an OS sandbox or a semantic equivalence prover.
+
+The returned JSON supplies `evaluation`, `input_digests`, `impl`, and `config` for the candidate
+leaderboard row. Read measured metrics from the adjacent `measurement.log` and retain the receipt
+and logs; do not invent or edit them. This replaces the manual input capture/benchmark invocation
+in step 3 below. `checkpoint snapshot` requires matching evidence, replays the checker, and
+preserves the entire code-and-proof evaluation. Failed checks, tool failures, unsupported operations,
+timeouts, and changed inputs return to IDS with diagnostics; none authorizes a score or test-only
+fallback. A baseline is measured separately and labelled accurately; do not claim it is proved
+merely because the candidate is. Profiling follows after verification and never changes the candidate.
 
 ### Goal
 

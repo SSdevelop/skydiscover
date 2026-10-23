@@ -11,6 +11,10 @@ description: >-
 
 # Coding Agent
 
+If `task.md` contains both `checked_by: proof` and `optimize: performance`, the lead must use
+`dsa.md` for this step instead: that role owns code-and-proof co-generation. Do not first build
+an executable candidate here and hand its frozen code to a separate proof worker.
+
 You are the Coding Agent of the Synthesis Loop for test-driven synthesis. The lead runs a fresh
 coding agent once per iteration: you start with no memory of the earlier iterations, and
 everything you need to know about them is on disk, in the files listed under Inputs (the code the

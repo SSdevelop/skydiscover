@@ -800,7 +800,7 @@ def export_deliverable(run_dir: Path, dest: Path, *, production_ready=False) -> 
     if checkpoint is None:
         # An unscored working copy must not be silently published.
         _, checkpoint = artifact_store.snapshot_run(
-            run_dir, dest, became_best=selected is None, require_evaluation=not run.is_proof_run()
+            run_dir, dest, became_best=selected is None, require_evaluation=run.is_scored_run()
         )
     selected = artifact_store.selected_best_checkpoint(out) or checkpoint
     verdicts = _checkpoint_verdicts(out, run_dir)

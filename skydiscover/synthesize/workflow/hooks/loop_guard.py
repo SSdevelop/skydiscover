@@ -127,7 +127,9 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
             _log(run, {"refused": "coding", "iteration": iteration, "attempts": state["attempts"], "cap": lim["attempts"]})
             return (
                 f"loop-guard: iteration {iteration} has used its {lim['attempts']} coding attempts "
-                "(the per-iteration cap). Do not launch another coding agent for it. Close it: "
+                "(the per-iteration cap). Do not launch another coding agent for it. For scored IDS, "
+                "record ISA's classified blocker with spec.ids feedback before restoring the "
+                "incumbent code and proof together; an incomplete proof is not a defect verdict. Close it: "
                 f"`python3 -m skydiscover.synthesize.spec.iterations fail {run} --reason \"<what was "
                 "tried and why it did not pass>\"`, restore the best checkpoint's "
                 ".verification/source into synthesis/impl/ if the working copy is broken, have the "

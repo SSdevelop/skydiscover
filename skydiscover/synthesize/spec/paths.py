@@ -338,8 +338,19 @@ class Run:
         return domain_slug(raw) if raw else None
 
     def is_proof_run(self) -> bool:
-        """A formal-proof-driven run: no benchmark; the task ships the proof check as its test suite."""
+        """Correctness requires the task's machine-checked proof suite."""
         return front_matter(self.task).get("checked_by") == "proof"
+
+    def is_scored_run(self) -> bool:
+        """Proof tasks opt into performance search; legacy proof-only tasks remain unscored."""
+        optimize = front_matter(self.task).get("optimize")
+        if optimize not in (None, "performance"):
+            raise ValueError("task.md: optimize must be performance, or omitted")
+        return not self.is_proof_run() or optimize == "performance"
+
+    def co_generates_proof(self) -> bool:
+        """IDS supplies a complete code-and-proof candidate to performance evaluation."""
+        return self.is_proof_run() and self.is_scored_run()
 
     # Phase 1: specification/
     @property

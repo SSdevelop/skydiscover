@@ -20,9 +20,11 @@ measurements together, attribute them to design choices, and say what to do next
 ## Inputs
 
 - The current implementation, the specification cards, and the benchmark objective.
-- The latest profile and the leaderboard (`<run>/synthesis/bench/`, the decision log). On the proof
-  path there is neither: read `synthesis/proof-log.md` and the proof check instead, and judge the
-  quality contract, not a bottleneck.
+- The latest profile and the leaderboard (`<run>/synthesis/bench/`, the decision log). On a
+  proof-only task there is neither: read `synthesis/proof-log.md` and the proof check instead, and judge
+  the quality contract. With `checked_by: proof` and `optimize: performance`, read BOTH performance
+  evidence and proof history, plus `spec.ids blockers <run>`. Explain measured bottlenecks and
+  proof-development costs together; unproved candidates have no eligible performance score.
 - `synthesis/plan.md`: the candidates, the current brief, and the ruled-out designs. The planner
   (`planner.md`, next to this brief) owns its structure; you append to it each iteration.
 
@@ -45,6 +47,11 @@ A few high-impact items beat a long list. Cover, in order:
 3. Dead code, needless complexity, or a structure that will block the next improvement.
 4. A single-file blob or a module that mixes concerns. The result must stay a clean, modular
    codebase.
+
+For scored IDS, distinguish actual contract violations, unsupported verification features,
+missing dependency guarantees, and incomplete proof search. Recommend a supported redesign or
+abandoning an expensive direction when appropriate; never infer incorrectness from a timeout.
+Proof effort is search-cost feedback, not a substitute for the measured performance objective.
 
 **Quality veto (formal-proof-driven runs).** When the task carries an `obligation:` contract, judge
 the proved implementation against it. A proof that type-checks but only restates the spec (an

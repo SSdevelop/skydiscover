@@ -420,7 +420,7 @@ def score_from_run(run_dir: Path) -> dict[str, Any]:
     and configuration), the one the candidate names first."""
     run = Run(run_dir)
     doc: dict[str, Any] = {"checkpoint": None, "created_at": _utc_now(), "score": {}}
-    if run.is_proof_run():
+    if not run.is_scored_run():
         return doc
     board = _read_json(run.leaderboard, [])
     inputs = input_digests(run_dir)
@@ -450,6 +450,10 @@ def score_from_run(run_dir: Path) -> dict[str, Any]:
     measured = Path(named) if Path(named).is_absolute() else run.path / named
     if measured.resolve() != entry.resolve():
         raise ValueError("The measured entry differs from the selected implementation.")
+    if run.co_generates_proof():
+        from .evaluation import validate
+
+        validate(run_dir, row, inputs)
     doc["score"] = {objective: metrics[objective]}
     requested = row.get("baseline")
     # One entry per baseline: the measurement taken beside this candidate (same implementation
@@ -539,6 +543,13 @@ def write_checkpoint(
             private = staged / ".verification"
             private.mkdir()
             measured = _measured_row(_read_json(run.leaderboard, []), inputs or {})
+            if run.co_generates_proof():
+                from .evaluation import validate
+
+                evidence = validate(run_dir, measured, inputs or {})
+                shutil.copytree(evidence, private / "evaluation", ignore=_copy_ignore)
+                if _tree_digest(evidence) != _tree_digest(private / "evaluation"):
+                    raise ValueError("Evaluation evidence changed while saving the checkpoint")
             _write_json(
                 private / "record.json",
                 {
@@ -715,6 +726,10 @@ def snapshot_run(
         raise FileNotFoundError(f"no generated artifact at {run.impl}")
     inputs = input_digests(run_dir)
     score = score_from_run(run_dir)
+    if run.co_generates_proof():
+        from .evaluation import recheck
+
+        recheck(run_dir, _measured_row(_read_json(run.leaderboard, []), inputs), inputs)
     if require_evaluation and not score["score"]:
         raise ValueError(
             f"refusing to checkpoint an unevaluated artifact: {run.leaderboard} "

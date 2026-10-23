@@ -31,7 +31,14 @@ import check_release  # noqa: E402
 from spec.paths import Run  # noqa: E402
 
 
-def run_suite(tests: Path, impl: Path, interface: Optional[Path], names: Sequence[str] = ()) -> int:
+def run_suite(
+    tests: Path,
+    impl: Path,
+    interface: Optional[Path],
+    names: Sequence[str] = (),
+    *,
+    show_output: bool = False,
+) -> int:
     """Every test must pass the implementation; `names` narrows the run to those test files."""
     if not impl.exists():
         print(f"run_tests: implementation not found: {impl}", file=sys.stderr)
@@ -46,6 +53,8 @@ def run_suite(tests: Path, impl: Path, interface: Optional[Path], names: Sequenc
     res = suite.run(tests, impl, interface, names, timeout=suite.SLOW_SECS)
     what = " ".join([suite.TEST_SCRIPT, *names])
     if res.passed:
+        if show_output:
+            suite.report(res)
         print(f"TESTS PASSED: {what} exited 0 for {impl}.")
         return 0
     suite.report(res)
@@ -76,6 +85,11 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--interface", default="", help="the interface directory")
     ap.add_argument("--suite", default="", help="the directory holding test.sh and the tests")
+    ap.add_argument(
+        "--show-output",
+        action="store_true",
+        help="retain successful checker diagnostics as well as failures",
+    )
     ap.add_argument(
         "--test",
         action="append",
@@ -120,7 +134,11 @@ def main(argv=None) -> int:
         tests, impl = Path(args.suite), Path(args.impl)
         interface = Path(args.interface) if args.interface else None
 
-    rc = run_suite(tests, impl, interface, args.test)
+    rc = (
+        run_suite(tests, impl, interface, args.test, show_output=True)
+        if args.show_output
+        else run_suite(tests, impl, interface, args.test)
+    )
     if not rc and run is not None and args.check_defects:
         rc = _defects(run, tests, impl, interface)
     if rc or not args.production_ready:

@@ -38,12 +38,13 @@ goes anywhere else in the project.
 └── review/                Phase 3: security.md, reliability.md, attack.md
 ```
 
-The front matter of `task.md` carries two keys the helpers read:
+The front matter of `task.md` carries the following keys:
 
 ```yaml
 ---
 domain: job scheduler     # the knowledge base folder this run reads and feeds: .skydiscover/kb/job-scheduler/
 checked_by: proof         # only for a formal-proof-driven run; omit for the test-driven path
+optimize: performance     # co-generate code + proof, then benchmark; omit for a proof-only task
 ---
 ```
 
@@ -78,15 +79,18 @@ the run has a trace, and when the benchmark scores a rate, a latency, or a cost.
 
 | Path | Owner | Purpose |
 |---|---|---|
-| `plan.md` | planner (critic appends to `## Learnings`; on the proof path the ISA rewrites `## Brief`) | the candidate designs, the ones ruled out with the numbers that killed them, and the current brief: the one next change |
+| `plan.md` | planner (critic appends to `## Learnings`; ISA rewrites `## Brief` only on proof-only tasks) | the candidate designs, the ones ruled out with the numbers that killed them, and the current brief: the one next change |
 | `proof-log.md` | dsa, isa | formal-proof-driven runs only: every proof attempt and why it failed |
+| `ids/report.json`, `ids/diagnostics/` | dsa, isa | the current blocker proposal and raw proof-search diagnostics |
+| `ids/blockers/<id>.json` | `spec.ids feedback` | candidate-bound historical reports to the main planner; never proof acceptance |
 | `impl/` | coding-agent (or dsa) | the current candidate: one source file, or a modular codebase built whole (a Python one holds `__init__.py`); `SKYDISCOVER_IMPL` names one file when several candidates sit here |
-| `evaluator/interface/` | first coding agent | the public contract the candidate implements and the tests compile against |
-| `evaluator/benchmark/` | first coding agent | the scored benchmark harness |
+| `evaluator/interface/` | first coding agent for test-driven runs; supplied formal spec for proof runs | the public contract the candidate implements and the tests compile against |
+| `evaluator/benchmark/` | first coding agent for test-driven runs; evaluator for scored IDS | the scored benchmark harness and declared runtime build path |
 | `evaluator/reference/`, `evaluator/mutants/` | evaluator (correctness mode) | the trusted reference every test must pass, the broken variants every test must catch |
 | `tests/` | evaluator (correctness mode), auditor | the suite: one file per kept test, any language, and `test.sh`, which builds and runs them against `$SKYDISCOVER_IMPL` (`bash test.sh [file...]`, exit 0 when every test passes) |
 | `bench/leaderboard.json`, `bench/runs/` | evaluator (performance mode) | one entry per scored candidate, and the raw output of each run |
 | `bench/profiles/` | evaluator (performance mode) | the bottleneck analysis of each scored candidate |
+| `bench/runs/evaluation-<id>/` | `spec.evaluation run` | checked input snapshot, full checker log, measurement log, successful receipt; checkpoint replay adds `recheck.log` |
 | `audit/<id>/`, `audit/completeness.json` | auditor | evidence per confirmed hack, and the stamp (`spec.checkpoint stamp-audit`) that the audit covered these implementation bytes |
 
 ### `review/` (Phase 3)
@@ -219,6 +223,9 @@ Nothing a run produced is deleted:
   only every `audit_every` iterations (default 15); Phase 3 reviews always run. Decisions go to
   `<run>/loop_guard.log.jsonl`. Finished iterations, scored or failed, are in
   `synthesis/bench/iterations.json`.
+  In scored IDS, DSA launches spend coding attempts; internal proof checks do not finish outer
+  iterations. On exhaustion record ISA feedback, close the unscored round, and restore both code
+  and proof. Audit cadence is independent of verification, which precedes every scored candidate.
 - `spec.reuse <run>` (Step 1) copies the newest earlier run's discovery of the domain from
   `<kb>/<domain>/runs/` and writes `specification/references/reuse.json` (fresh vs to re-verify).
 

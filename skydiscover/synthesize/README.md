@@ -41,6 +41,14 @@ specification: requirements, environment, workload, and optionally a formal spec
 Then the loop runs: the Planner proposes a design, the Coding Agent implements it, the Evaluator
 scores it, and the Critic guides the next round.
 
+For code-and-proof co-generation before performance evaluation, put both `checked_by: proof`
+and `optimize: performance` in `task.md` front matter. DSA develops implementation and proof
+together; ISA diagnoses stalls and sends design blockers to the Planner. Only a complete
+machine-checked candidate reaches the performance evaluator. `spec.evaluation run` checks a
+snapshot before benchmarking it, and checkpoints retain the proof and evaluation evidence.
+The Auditor remains an independent review of coverage, assumptions, and runtime integration.
+Existing proof-only tasks omit `optimize` and need no benchmark.
+
 Every specification misses something, so the Auditor looks for reward hacks (changes that raise the
 score while breaking what you meant) and turns each one into a new test. Those tests, and your
 answers, are kept in `.skydiscover/kb/<domain>/` for the next run.

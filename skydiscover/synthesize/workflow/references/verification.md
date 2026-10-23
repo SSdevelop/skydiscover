@@ -3,6 +3,73 @@
 How the Evaluator decides. Correctness is a prerequisite for scoring: a model's opinion, a code
 review, or a benchmark number never substitutes for an executable check.
 
+## Code-and-Proof Performance Evaluation
+
+Set `checked_by: proof` and `optimize: performance` for IDS co-generation within the performance
+loop. The authoritative formal specification and checker remain independent of the optimizing
+agent. The task's `test.sh` runs its real checker (Rocq, Lean, Verus, or another tool), covers all
+required obligations, excludes unauthorized assumptions and escape hatches, and runs required
+integration checks. Pin dependencies and tools in verification inputs and check those pins in
+the suite. Partial verification, compilation without verification, and tool failure are not passes.
+
+The evaluator calls `spec.evaluation run <run> --config '<JSON object>' -- <benchmark command>`.
+It copies the candidate code AND proof, task, specification, tests, and evaluator into a snapshot
+under `synthesis/bench/runs/evaluation-<id>/inputs/`. It runs the full suite there first, then
+executes the command there, and emits `evaluation.json` only if both finish successfully and the
+snapshot and original inputs remain unchanged. Logs remain on failure. Timeouts kill the process
+group the helper started. Commands use the snapshot's environment paths and write build output
+to `SKYDISCOVER_EVALUATION`, outside `inputs/`.
+
+The candidate row adds `evaluation: synthesis/bench/runs/evaluation-<id>/evaluation.json` to the
+usual measurement fields. Its config, entry, and digests must match the receipt. Checkpoint creation
+checks the receipt and its logs, reruns the full checker on the measured snapshot, and saves it
+under `.verification/evaluation/`; code and proof live together in `.verification/source/`.
+Final export still checks the selected artifact in a relocated directory with the current suite.
+Reverting restores the pair, never executable code alone. Any change to code or proof requires
+a new evaluation before scoring that revision.
+
+This wrapper establishes ordering and input identity, not mathematical soundness of an arbitrary
+test script. The task adapter must ensure that the benchmark executes the proved implementation
+through the declared compilation/extraction path, including dependency, feature, and build settings.
+An unverified alternative runtime cannot inherit the proof by having the same public API.
+Compiler/extraction correctness and any external assumptions remain explicit trust boundaries.
+
+## IDS Planner Feedback
+
+DSA first repairs locally, then ISA diagnoses a stall. If the optimization needs an outer design
+decision, ISA writes `synthesis/ids/report.json` in this shape (paths are relative to the run):
+
+```json
+{
+  "classification": "unsupported",
+  "obligations": ["update_preserves_state"],
+  "source_locations": ["synthesis/impl/store.rs:42"],
+  "diagnostics": ["synthesis/ids/diagnostics/attempt-3.txt"],
+  "attempts": ["Revised the invariant; the operation still cannot be translated"],
+  "alternatives": ["Use a supported synchronization primitive", "Extend the adapter"],
+  "requested_decision": "Choose a representation the current verification approach supports",
+  "performance_impact": "Expected contention trade-off; not yet measured"
+}
+```
+
+Run `spec.ids feedback <run> --report <report.json>`. It validates the report and diagnostics,
+records input digests and iteration, and saves a historical report in `synthesis/ids/blockers/`.
+`spec.ids blockers <run>` marks reports current only if candidate inputs, diagnostics, and
+iteration still match. The planner reads this before revising the main brief. Recording feedback
+does not close an iteration, create a defect finding, or accept a proof.
+
+Classifications: `counterexample` (also requires a `counterexample` string giving the execution
+and violated guarantee), `unsupported` (verifier/adapter capability), `missing_contract`
+(dependency guarantee), `incomplete` (stalled/budget-limited search), or `operational` (tools or
+environment). A report is a diagnosis, not mechanically validated counterexample evidence.
+Confirmed defect findings retain their independent validation requirements. An incomplete search
+can justify abandoning an optimization without claiming it is incorrect or universally unprovable.
+
+The main planner may request redesign, another proof strategy, adapter work, or restoration of
+the incumbent. Specification/assumption changes require explicit resolution; never silently weaken
+the obligation or substitute tests for required proof. Failed unscored rounds count toward the
+outer budget; local proof checks are not separate performance iterations.
+
 ## The Test Suite
 
 The suite is the directory `<run>/synthesis/tests/`. It holds one file per test, in any language,

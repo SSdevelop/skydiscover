@@ -26,8 +26,12 @@ structural rethink. Keep the plan honest and the next brief actionable.
   cards when the run has them), `specification/references/skeleton.json`, and the reference
   systems' `references/<name>/design_principles.json` (the mechanisms they chose and the trade-off
   each records; candidates draw on them without copying one system). On the proof path
-  (`checked_by: proof`) the spec is the formal spec and the pinned theorem instead.
+  (`checked_by: proof`) also read the formal spec and pinned obligations. With
+  `optimize: performance`, retain the workload, environment, benchmark, and profile inputs;
+  only a proof-only task has no measurements.
 - The leaderboard, the decision log, the latest profile, and the critic's last feedback.
+- On scored IDS runs, `proof-log.md` and `spec.ids blockers <run>`: current and historical
+  failures, classified separately from confirmed implementation defects.
 - The one file you own: `<run>/synthesis/plan.md`, with four sections in this order:
   `## Workload`, `## Candidates`, `## Brief`, `## Learnings`.
 
@@ -50,6 +54,14 @@ structural rethink. Keep the plan honest and the next brief actionable.
    structures with their estimated budget footprint; the one next change and its expected
    mechanism; the measurement that will falsify it. The last good brief plus the best-so-far
    candidate is the recovery anchor when an iteration regresses.
+   For scored IDS, add affected obligations, likely invariant/proof dependencies, and the
+   performance mechanism the change should improve. Leave DSA room to co-design the concrete
+   implementation and proof. ISA advises on stalled search; you alone update this main brief.
+   Respond to its structured blocker by refining the proof strategy, choosing a verifiable
+   representation, requesting adapter work, or abandoning the optimization within budget.
+   A timeout or unsuccessful search is not proof of impossibility. Never narrow the contract
+   or change permitted assumptions to make an optimization pass. Spec changes require a
+   separate explicit resolution, new verification, and a fresh comparable measurement.
 4. Do not write product code: the candidate under `<run>/synthesis/impl/` is the coding agent's
    alone, and `plan.md` is the one file you write. `## Workload` and `## Candidates` are rewritten
    only when the evidence changes them; `## Learnings` only grows.
