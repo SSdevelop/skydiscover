@@ -131,12 +131,19 @@ def test_decide_ignores_non_bash_and_non_clone():
 
 def test_kb_root_follows_skydiscover_home(monkeypatch, tmp_path):
     # The guard reads the same knowledge base root a run relocated by $SKYDISCOVER_HOME writes to,
-    # and the default home otherwise.
+    # and the project's knowledge base otherwise, independent of the user's home.
+    monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
+    monkeypatch.delenv("SKYDISCOVER_RUNS", raising=False)
+    project = tmp_path / "project"
+    (project / ".skydiscover").mkdir(parents=True)
+    nested = project / "src"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
     monkeypatch.setenv("SKYDISCOVER_HOME", str(tmp_path / "home"))
     assert g.kb_root() == tmp_path / "home"
     monkeypatch.delenv("SKYDISCOVER_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "user"))
-    assert g.kb_root() == tmp_path / "user" / ".skydiscover"
+    assert g.kb_root() == project / ".skydiscover" / "kb"
 
 
 def test_flags_between_git_and_clone_are_still_a_clone(tmp_path):

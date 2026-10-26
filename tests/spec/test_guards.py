@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,23 @@ def budget_guard():
 @pytest.fixture(scope="module")
 def history_guard():
     return _load("history_guard")
+
+
+@pytest.mark.parametrize("spec", [None, ModuleSpec("missing_loader", None)])
+def test_history_guard_keeps_fallback_roots_when_import_fails(
+    tmp_path, history_guard, monkeypatch, spec
+):
+    custom = tmp_path / "custom"
+    user = tmp_path / "user"
+    monkeypatch.setenv("SKYDISCOVER_HOME", str(custom))
+    monkeypatch.setenv("HOME", str(user))
+    monkeypatch.setattr(history_guard.importlib.util, "spec_from_file_location", lambda *args: spec)
+    cwd = Path.cwd()
+    assert history_guard._kb_roots(tmp_path) == [
+        custom.resolve(),
+        (user / ".skydiscover").resolve(),
+    ]
+    assert Path.cwd() == cwd
 
 
 def _project(tmp_path: Path, *, impl: bool = True, checkpoints: int = 0) -> Run:
@@ -91,7 +109,9 @@ def test_budget_guard_never_traps_a_lead_that_cannot_progress(tmp_path, budget_g
     assert log[-1]["allowed"].startswith(f"{budget_guard.MAX_BLOCKS} refusals")
 
 
-def test_budget_guard_stays_out_of_the_specification_and_a_spent_budget(tmp_path, budget_guard, monkeypatch):
+def test_budget_guard_stays_out_of_the_specification_and_a_spent_budget(
+    tmp_path, budget_guard, monkeypatch
+):
     monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
     spec_only = _project(tmp_path / "a", impl=False)
     (spec_only.path / "budget.json").write_text(json.dumps({"iterations": 20}))
@@ -105,13 +125,21 @@ def test_budget_guard_stays_out_of_the_specification_and_a_spent_budget(tmp_path
     "row, n",
     [
         ({"title": "Budget: 50 iterations (user, 2026-09-28)", "detail": "..."}, 50),
-        ({"title": "knowledge base wiki: skip", "detail": "The Step 4 budget is Quick (20 iterations)"}, 20),
+        (
+            {
+                "title": "knowledge base wiki: skip",
+                "detail": "The Step 4 budget is Quick (20 iterations)",
+            },
+            20,
+        ),
         ({"title": "budget", "detail": "Thorough"}, 200),
     ],
 )
 def test_budget_is_read_from_the_decision_log_when_not_recorded(tmp_path, budget_guard, row, n):
     run = _project(tmp_path)
-    run.decision_log.write_text(json.dumps([{"title": "unrelated 7 iterations", "detail": ""}, row]))
+    run.decision_log.write_text(
+        json.dumps([{"title": "unrelated 7 iterations", "detail": ""}, row])
+    )
     assert budget_guard.budget(run.path) == n
 
 
@@ -157,7 +185,9 @@ def _bash(command: str, cwd: Path) -> dict:
         "echo x > {kb}/kv-store/runs/kv_1/index.json",
     ],
 )
-def test_history_guard_refuses_deleting_or_moving_saved_history(tmp_path, kb, history_guard, command):
+def test_history_guard_refuses_deleting_or_moving_saved_history(
+    tmp_path, kb, history_guard, command
+):
     out = tmp_path / "project" / "outputs" / "kv_1"
     reason = history_guard.decide(_bash(command.format(kb=kb, out=out), tmp_path))
     assert reason and reason.startswith("history-guard:")

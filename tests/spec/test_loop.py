@@ -85,7 +85,11 @@ def test_a_run_without_a_record_is_read_from_its_checkpoints(tmp_path):
     assert iterations.current(run.path) == 3
     # the first write seeds the record from the checkpoints
     assert iterations.close(run.path, "failed", reason="x") == 3
-    assert [r["checkpoint"] for r in iterations.finished(run.path)] == ["checkpoint_1", "checkpoint_2", None]
+    assert [r["checkpoint"] for r in iterations.finished(run.path)] == [
+        "checkpoint_1",
+        "checkpoint_2",
+        None,
+    ]
 
 
 def test_the_archive_and_the_budget_count_a_failed_iteration(tmp_path, budget_guard):
@@ -105,14 +109,18 @@ def test_the_archive_and_the_budget_count_a_failed_iteration(tmp_path, budget_gu
 def test_coding_attempts_are_capped_per_iteration(tmp_path, loop_guard, monkeypatch):
     monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
     run = _run(tmp_path)
-    assert spec_run.main(["budget", str(run.path), "10", "--attempts", "2", "--audit-every", "3"]) == 0
+    assert (
+        spec_run.main(["budget", str(run.path), "10", "--attempts", "2", "--audit-every", "3"]) == 0
+    )
     coder = _launch(run, subagent_type="skysynth:2-synthesis-loop:coding-agent")
     assert loop_guard.decide(coder) is None
     assert loop_guard.decide(coder) is None
     refused = loop_guard.decide(coder)
     assert refused and "2 coding attempts" in refused and "spec.iterations fail" in refused
     # a coding agent launched as a general-purpose agent with the brief is still counted
-    by_brief = _launch(run, subagent_type="general-purpose", prompt="Read agents/2-synthesis-loop/coding-agent.md")
+    by_brief = _launch(
+        run, subagent_type="general-purpose", prompt="Read agents/2-synthesis-loop/coding-agent.md"
+    )
     assert loop_guard.decide(by_brief)
     # closing the round starts a fresh count
     iterations.close(run.path, "failed", reason="spent")
@@ -121,20 +129,31 @@ def test_coding_attempts_are_capped_per_iteration(tmp_path, loop_guard, monkeypa
     assert loop_guard.decide(_launch(run, subagent_type="Explore")) is None
 
 
-def test_the_auditor_runs_every_n_iterations_and_always_in_phase_3(tmp_path, loop_guard, monkeypatch):
+def test_the_auditor_runs_every_n_iterations_and_always_in_phase_3(
+    tmp_path, loop_guard, monkeypatch
+):
     monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
     run = _run(tmp_path)
     assert spec_run.main(["budget", str(run.path), "10", "--audit-every", "2"]) == 0
-    auditor = _launch(run, subagent_type="skysynth:2-synthesis-loop:auditor", prompt="audit iteration")
+    auditor = _launch(
+        run, subagent_type="skysynth:2-synthesis-loop:auditor", prompt="audit iteration"
+    )
     assert "every 2 iterations" in loop_guard.decide(auditor)  # iteration 1: not due
     for _ in range(2):
         iterations.close(run.path, "failed", reason="x")
     assert loop_guard.decide(auditor) is None  # 2 finished: due
     assert loop_guard.decide(auditor)  # and not again right away
-    final = _launch(run, subagent_type="skysynth:2-synthesis-loop:auditor", prompt="production lens: security")
+    final = _launch(
+        run, subagent_type="skysynth:2-synthesis-loop:auditor", prompt="production lens: security"
+    )
     assert loop_guard.decide(final) is None
     log = [json.loads(x) for x in (run.path / "loop_guard.log.jsonl").read_text().splitlines()]
-    assert [e.get("allowed") or "refused" for e in log] == ["refused", "auditor", "refused", "auditor"]
+    assert [e.get("allowed") or "refused" for e in log] == [
+        "refused",
+        "auditor",
+        "refused",
+        "auditor",
+    ]
 
 
 def test_the_specification_is_never_limited(tmp_path, loop_guard, monkeypatch):
@@ -169,7 +188,9 @@ def test_reuse_copies_an_earlier_runs_discovery_and_marks_what_is_fresh(tmp_path
     for name, sha in (("sys1", head), ("sys2", "0" * 40)):
         d = first.references / name
         d.mkdir(parents=True)
-        (d / "spec.json").write_text(json.dumps({"source": f"owner/{name} @ {sha}", "axes": {"a": 1}}))
+        (d / "spec.json").write_text(
+            json.dumps({"source": f"owner/{name} @ {sha}", "axes": {"a": 1}})
+        )
         (d / "verification.json").write_text('{"ok": true}\n')
     (first.references / "axes.json").write_text('{"axes": []}\n')
     first.sources.mkdir(parents=True, exist_ok=True)

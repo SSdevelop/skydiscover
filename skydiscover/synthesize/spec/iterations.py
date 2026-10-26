@@ -84,8 +84,13 @@ def _from_checkpoints(run_dir: Path) -> List[Dict[str, Any]]:
     for i, (_, cp) in enumerate(checkpoints(run_dir), 1):
         score = _read_json(cp / "score.json", {})
         rows.append(
-            {"n": i, "outcome": "checkpoint", "checkpoint": cp.name, "reason": "",
-             "at": score.get("created_at") if isinstance(score, dict) else None}
+            {
+                "n": i,
+                "outcome": "checkpoint",
+                "checkpoint": cp.name,
+                "reason": "",
+                "at": score.get("created_at") if isinstance(score, dict) else None,
+            }
         )
     return rows
 
@@ -136,8 +141,13 @@ def close(run_dir: Path, outcome: str, *, checkpoint: str = "", reason: str = ""
                     return int(r["n"])
         n = len(rows) + 1
         rows.append(
-            {"n": n, "outcome": outcome, "checkpoint": checkpoint or None, "reason": reason,
-             "at": _utc_now()}
+            {
+                "n": n,
+                "outcome": outcome,
+                "checkpoint": checkpoint or None,
+                "reason": reason,
+                "at": _utc_now(),
+            }
         )
         tmp = path.with_name(f".iterations.json.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
         tmp.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
@@ -160,13 +170,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     if args.command == "fail":
         if current(run.path) == 0:
-            print("iterations: the synthesis loop has not started; nothing to fail", file=sys.stderr)
+            print(
+                "iterations: the synthesis loop has not started; nothing to fail", file=sys.stderr
+            )
             return 2
         n = close(run.path, "failed", reason=args.reason)
-        print(f"iteration {n}: failed ({args.reason}); iteration {n + 1} starts from the best checkpoint")
+        print(
+            f"iteration {n}: failed ({args.reason}); iteration {n + 1} starts from the best checkpoint"
+        )
         return 0
     for r in finished(run.path):
-        print(f"  {r['n']:>3}  {r['outcome']:<10} {r.get('checkpoint') or '-':<14} {r.get('at') or ''}  {r.get('reason') or ''}")
+        print(
+            f"  {r['n']:>3}  {r['outcome']:<10} {r.get('checkpoint') or '-':<14} {r.get('at') or ''}  {r.get('reason') or ''}"
+        )
     print(f"in progress: iteration {current(run.path)}")
     return 0
 

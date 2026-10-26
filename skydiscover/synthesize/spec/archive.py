@@ -348,12 +348,20 @@ def _iterations_md(index: Dict[str, Any]) -> str:
         )
         score = ", ".join(f"{m} {v}" for m, v in (r.get("score") or {}).items())
         best = " (best)" if r.get("became_best") else ""
-        ended = r.get("checkpoint") or ("failed: " + str(r.get("reason") or "")[:60] if r.get("outcome") == "failed" else "-")
+        ended = r.get("checkpoint") or (
+            "failed: " + str(r.get("reason") or "")[:60] if r.get("outcome") == "failed" else "-"
+        )
         lines.append(
             f"| {k} | {ended}{best} | {score or '-'} | "
             f"{tokens.get('total_tokens', 0):,} | {roles or '-'} | {len(r.get('snapshots', []))} |"
         )
-    lines += ["", "## Snapshots", "", "| snapshot | iteration | trigger | detail | time |", "|---|---|---|---|---|"]
+    lines += [
+        "",
+        "## Snapshots",
+        "",
+        "| snapshot | iteration | trigger | detail | time |",
+        "|---|---|---|---|---|",
+    ]
     for s in index.get("snapshots", []):
         lines.append(
             f"| {s['snapshot']} | {s.get('iteration', 0)} | {s.get('trigger') or '-'} | "
@@ -421,7 +429,7 @@ def snapshot(
                 and copied["links"] == prev_manifest.get("links")
                 and prev_manifest.get("iteration", iteration) == iteration
             )
-            if unchanged:
+            if unchanged and previous is not None:
                 shutil.rmtree(staging)
                 _refresh_index(run, archive, domain, None)
                 refresh_kb_version(run.path, domain)
@@ -530,7 +538,9 @@ def refresh_kb_version(run_dir: Path, domain: Optional[str] = None) -> Optional[
             raise
         index = _read_json(root / "index.json", {})
         rows = [r for r in (index.get("versions") or []) if r.get("version") != archive.name]
-        prior = next((r for r in index.get("versions") or [] if r.get("version") == archive.name), {})
+        prior: Dict[str, Any] = next(
+            (r for r in index.get("versions") or [] if r.get("version") == archive.name), {}
+        )
         files = copied["files"]
         rows.append(
             {
@@ -542,7 +552,9 @@ def refresh_kb_version(run_dir: Path, domain: Optional[str] = None) -> Optional[
                 "tests": sum(
                     1
                     for k in files
-                    if k.startswith("tests/") and k.count("/") == 1 and k not in ("tests/index.json", "tests/test.sh")
+                    if k.startswith("tests/")
+                    and k.count("/") == 1
+                    and k not in ("tests/index.json", "tests/test.sh")
                 ),
                 "decisions": len(_read_json(dest / "decisions.json", []) or []),
                 "wiki_pages": sum(1 for k in files if k.startswith("wiki/") and k.endswith(".md")),

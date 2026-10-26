@@ -52,6 +52,8 @@ def _kb_roots(cwd: Path) -> List[Path]:
         spec = importlib.util.spec_from_file_location(
             "_skysynth_clone_guard", Path(__file__).resolve().parent / "clone_reuse_guard.py"
         )
+        if spec is None or spec.loader is None:
+            raise ImportError("Cannot load clone_reuse_guard")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         here = os.getcwd()
@@ -91,9 +93,7 @@ def _exempt(path: Path, root: Optional[Path]) -> bool:
 
 def _is_checkpoint(path: Path) -> bool:
     parts = path.parts
-    return any(
-        a == "checkpoints" and b.startswith("checkpoint_") for a, b in zip(parts, parts[1:])
-    )
+    return any(a == "checkpoints" and b.startswith("checkpoint_") for a, b in zip(parts, parts[1:]))
 
 
 def _classify(path: Path, roots: List[Path]) -> Tuple[Optional[str], Optional[Path]]:

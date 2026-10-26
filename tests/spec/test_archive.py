@@ -41,12 +41,18 @@ def test_snapshots_keep_every_iteration_and_link_unchanged_files(tmp_path):
     run.plan.write_text("## Brief\niteration 2\n", encoding="utf-8")  # the planner rewrites it
     second = archive.snapshot(run.path, "checkpoint_2")
 
-    assert first.parent == second.parent == Domain("kv store").runs / first.parents[1].name / "snapshots"
+    assert (
+        first.parent
+        == second.parent
+        == Domain("kv store").runs / first.parents[1].name / "snapshots"
+    )
     assert "iteration 1" in (first / "synthesis/plan.md").read_text()
     assert "iteration 2" in (second / "synthesis/plan.md").read_text()
     # unchanged bytes are one inode shared by both snapshots
     assert os.stat(first / "task.md").st_ino == os.stat(second / "task.md").st_ino
-    assert os.stat(first / "synthesis/plan.md").st_ino != os.stat(second / "synthesis/plan.md").st_ino
+    assert (
+        os.stat(first / "synthesis/plan.md").st_ino != os.stat(second / "synthesis/plan.md").st_ino
+    )
     assert not os.access(second / "synthesis/plan.md", os.W_OK), "archived files are read-only"
     # nothing changed: no duplicate snapshot
     assert archive.snapshot(run.path, "finish") == second
@@ -244,13 +250,20 @@ def test_every_role_and_iteration_is_kept_with_its_tokens(tmp_path, hook, monkey
     sub.mkdir(parents=True)
     (sub / "agent-x.jsonl").write_text(_line("d", "2026-01-01T01:45:00Z", 8) + "\n")
     (sub / "agent-x.meta.json").write_text(
-        json.dumps({"agentType": "skysynth:2-synthesis-loop:coding-agent", "description": "try B-link"})
+        json.dumps(
+            {"agentType": "skysynth:2-synthesis-loop:coding-agent", "description": "try B-link"}
+        )
     )
     monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
 
     def fire(event, **extra):
-        payload = {"session_id": "s1", "transcript_path": str(main), "cwd": str(run.path.parent.parent),
-                   "hook_event_name": event, **extra}
+        payload = {
+            "session_id": "s1",
+            "transcript_path": str(main),
+            "cwd": str(run.path.parent.parent),
+            "hook_event_name": event,
+            **extra,
+        }
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
         assert hook.main(["--hook"]) == 0
 
@@ -267,7 +280,10 @@ def test_every_role_and_iteration_is_kept_with_its_tokens(tmp_path, hook, monkey
     archive_dir = Path(run.archive_pointer.read_text().strip())
     names = [p.name for p in sorted(archive_dir.glob("snapshots/*")) if not p.name.startswith(".")]
     assert names == ["0001_iter-03_after-coding-agent", "0002_iter-03_turn"]
-    assert "failed its tests" in (archive_dir / "snapshots" / names[1] / "synthesis/impl/store.py").read_text()
+    assert (
+        "failed its tests"
+        in (archive_dir / "snapshots" / names[1] / "synthesis/impl/store.py").read_text()
+    )
     index = json.loads((archive_dir / "index.json").read_text())
     assert index["snapshots"][0]["detail"] == "skysynth:2-synthesis-loop:coding-agent try B-link"
     table = index["iterations"]
@@ -288,10 +304,14 @@ def test_specification_work_is_iteration_zero(tmp_path, hook):
     archive_dir.mkdir()
     run.archive_pointer.write_text(f"{archive_dir}\n")
     (archive_dir / "index.json").write_text(
-        json.dumps({"snapshots": [
-            {"snapshot": "0001", "iteration": 0, "created_at": "2026-01-01T00:10:00Z"},
-            {"snapshot": "0002", "iteration": 1, "created_at": "2026-01-01T00:20:00Z"},
-        ]})
+        json.dumps(
+            {
+                "snapshots": [
+                    {"snapshot": "0001", "iteration": 0, "created_at": "2026-01-01T00:10:00Z"},
+                    {"snapshot": "0002", "iteration": 1, "created_at": "2026-01-01T00:20:00Z"},
+                ]
+            }
+        )
     )
     out = tmp_path / "project" / "outputs" / "kv_1"
     out.mkdir(parents=True)
@@ -329,7 +349,11 @@ def test_each_run_leaves_its_own_version_of_the_knowledge_base(tmp_path, monkeyp
     index = json.loads((versions / "index.json").read_text())
     assert [v["run"] for v in index["versions"]] == ["kv", "kv-2"]
     first, second = (versions / v["version"] for v in index["versions"])
-    assert (first / "tests" / "capacity.py").is_file() and not (first / "tests" / "latency.py").exists()
-    assert (second / "tests" / "capacity.py").is_file() and (second / "tests" / "latency.py").is_file()
+    assert (first / "tests" / "capacity.py").is_file() and not (
+        first / "tests" / "latency.py"
+    ).exists()
+    assert (second / "tests" / "capacity.py").is_file() and (
+        second / "tests" / "latency.py"
+    ).is_file()
     assert [v["tests"] for v in index["versions"]] == [1, 2]
     assert not (second / "runs").exists() and not (second / "versions").exists()

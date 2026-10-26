@@ -78,7 +78,23 @@ def _write_settings(
     guard="python3 /somewhere/clone_reuse_guard.py",
     edit_guard="python3 /somewhere/framework_edit_guard.py",
 ):
-    return _run(["python3", "-c", _settings_writer(), str(path), hook, guard, edit_guard])
+    return _run(
+        [
+            "python3",
+            "-c",
+            _settings_writer(),
+            str(path),
+            hook,
+            guard,
+            edit_guard,
+            "python3 /somewhere/token_usage.py --hook",
+            "python3 /somewhere/budget_guard.py",
+            "python3 /somewhere/history_guard.py",
+            "python3 /somewhere/loop_guard.py",
+            "python3 /somewhere/watchdog.py",
+            "python3 /somewhere/process_guard.py",
+        ]
+    )
 
 
 def test_settings_writer_wires_the_framework_edit_guard_once(tmp_path):
@@ -113,7 +129,8 @@ def test_settings_writer_syntax():
 
 def test_settings_writer_preserves_existing_config_and_backs_it_up(tmp_path):
     settings = tmp_path / "settings.json"
-    original = {"theme": "dark", "env": {"MY_VAR": "keep-me"}, "hooks": {"Stop": [{"hooks": []}]}}
+    user_hook = {"hooks": [{"type": "command", "command": "echo user-owned-hook"}]}
+    original = {"theme": "dark", "env": {"MY_VAR": "keep-me"}, "hooks": {"Stop": [user_hook]}}
     settings.write_text(json.dumps(original, indent=2), encoding="utf-8")
 
     assert _write_settings(settings).returncode == 0
@@ -121,7 +138,7 @@ def test_settings_writer_preserves_existing_config_and_backs_it_up(tmp_path):
     cfg = json.loads(settings.read_text(encoding="utf-8"))
     assert cfg["theme"] == "dark"  # unrelated keys survive
     assert cfg["env"]["MY_VAR"] == "keep-me"  # unrelated env survives
-    assert cfg["hooks"]["Stop"] == original["hooks"]["Stop"]  # unrelated hooks survive
+    assert user_hook in cfg["hooks"]["Stop"]  # unrelated hooks survive alongside new hooks
     assert (
         "env" not in cfg or "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" not in cfg["env"]
     )  # never flipped for the user
@@ -437,33 +454,39 @@ def test_settings_writer_leaves_a_current_gate_hook_untouched(tmp_path):
     cur = "bash /NEW/skydiscover/synthesize/workflow/hooks/delivery_check.sh"
     curg = "python3 /NEW/skydiscover/synthesize/workflow/hooks/clone_reuse_guard.py"
     cure = "python3 /NEW/skydiscover/synthesize/workflow/hooks/framework_edit_guard.py"
-    # A fully-current file: all current hooks already present with their timeouts, so nothing changes.
-    settings.write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "TaskCompleted": [
-                        {"hooks": [{"type": "command", "command": cur, "timeout": 3600}]}
-                    ],
-                    "PreToolUse": [
-                        {
-                            "matcher": "Bash",
-                            "hooks": [{"type": "command", "command": curg, "timeout": 60}],
-                        },
-                        {
-                            "matcher": "Edit|Write|MultiEdit|NotebookEdit",
-                            "hooks": [{"type": "command", "command": cure, "timeout": 60}],
-                        },
-                    ],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+
+    def entry(command, matcher=None, timeout=60):
+        item = {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+        if matcher is not None:
+            item["matcher"] = matcher
+        return item
+
+    # A fully-current file includes all hooks, so reinstalling must not create a backup.
+    tokens = "python3 /somewhere/token_usage.py --hook"
+    cfg = {
+        "hooks": {
+            "TaskCompleted": [entry(cur, timeout=3600)],
+            "PreToolUse": [
+                entry(curg, "Bash"),
+                entry(cure, "Edit|Write|MultiEdit|NotebookEdit"),
+                entry("python3 /somewhere/history_guard.py", "Bash"),
+                entry("python3 /somewhere/history_guard.py", "Edit|Write|MultiEdit|NotebookEdit"),
+                entry("python3 /somewhere/loop_guard.py", "Task|Agent"),
+                entry("python3 /somewhere/watchdog.py", "Bash"),
+                entry("python3 /somewhere/process_guard.py", "Bash"),
+            ],
+            "Stop": [entry(tokens), entry("python3 /somewhere/budget_guard.py")],
+            "SubagentStop": [entry(tokens)],
+            "PreCompact": [entry(tokens)],
+            "SessionEnd": [entry(tokens)],
+        }
+    }
+    settings.write_text(json.dumps(cfg), encoding="utf-8")
     assert _write_settings(settings, hook=cur, guard=curg, edit_guard=cure).returncode == 0
     tc = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["TaskCompleted"]
     cmds = [h["command"] for e in tc for h in e.get("hooks", [])]
     assert cmds == [cur], "no duplicate entry on re-install"
+    assert json.loads(settings.read_text(encoding="utf-8")) == cfg
     assert not list(tmp_path.glob("settings.json.bak.*")), "no backup when nothing changed"
 
 

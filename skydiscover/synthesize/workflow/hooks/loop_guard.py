@@ -64,8 +64,10 @@ def role_of(tool_input: Dict[str, Any]) -> Optional[str]:
     """'coding' or 'auditor' for a launch of one of those roles, else None."""
     kind = str(tool_input.get("subagent_type") or "").lower()
     text = f"{tool_input.get('prompt') or ''}\n{tool_input.get('description') or ''}"
-    if kind.endswith(("coding-agent", ":dsa")) or kind == "dsa" or re.search(
-        r"(coding-agent|/dsa)\.md\b", text
+    if (
+        kind.endswith(("coding-agent", ":dsa"))
+        or kind == "dsa"
+        or re.search(r"(coding-agent|/dsa)\.md\b", text)
     ):
         return "coding"
     if kind.endswith("auditor") or re.search(r"\bauditor\.md\b", text):
@@ -110,7 +112,9 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
         return None
     tu = _tokens()
     transcript = Path(payload.get("transcript_path") or "")
-    run = tu.find_run(Path(payload.get("cwd") or os.getcwd()), transcript if transcript.is_file() else None)
+    run = tu.find_run(
+        Path(payload.get("cwd") or os.getcwd()), transcript if transcript.is_file() else None
+    )
     if run is None:
         return None
     iteration = tu.current_iteration(run)
@@ -124,13 +128,21 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
 
     if role == "coding":
         if state["attempts"] >= lim["attempts"]:
-            _log(run, {"refused": "coding", "iteration": iteration, "attempts": state["attempts"], "cap": lim["attempts"]})
+            _log(
+                run,
+                {
+                    "refused": "coding",
+                    "iteration": iteration,
+                    "attempts": state["attempts"],
+                    "cap": lim["attempts"],
+                },
+            )
             return (
                 f"loop-guard: iteration {iteration} has used its {lim['attempts']} coding attempts "
                 "(the per-iteration cap). Do not launch another coding agent for it. For scored IDS, "
                 "record ISA's classified blocker with spec.ids feedback before restoring the "
                 "incumbent code and proof together; an incomplete proof is not a defect verdict. Close it: "
-                f"`python3 -m skydiscover.synthesize.spec.iterations fail {run} --reason \"<what was "
+                f'`python3 -m skydiscover.synthesize.spec.iterations fail {run} --reason "<what was '
                 "tried and why it did not pass>\"`, restore the best checkpoint's "
                 ".verification/source into synthesis/impl/ if the working copy is broken, have the "
                 f"critic log what this round ruled out, then start iteration {iteration + 1} with the "
@@ -138,7 +150,15 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
             )
         state["attempts"] += 1
         _save(run, state)
-        _log(run, {"allowed": "coding", "iteration": iteration, "attempt": state["attempts"], "cap": lim["attempts"]})
+        _log(
+            run,
+            {
+                "allowed": "coding",
+                "iteration": iteration,
+                "attempt": state["attempts"],
+                "cap": lim["attempts"],
+            },
+        )
         return None
 
     # the auditor
@@ -150,9 +170,20 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
         if due and not final:
             state["last_audit_done"] = done
         _save(run, state)
-        _log(run, {"allowed": "auditor", "iteration": iteration, "final": bool(final), "finished": done})
+        _log(
+            run,
+            {"allowed": "auditor", "iteration": iteration, "final": bool(final), "finished": done},
+        )
         return None
-    _log(run, {"refused": "auditor", "iteration": iteration, "finished": done, "last_audit_finished": last})
+    _log(
+        run,
+        {
+            "refused": "auditor",
+            "iteration": iteration,
+            "finished": done,
+            "last_audit_finished": last,
+        },
+    )
     return (
         f"loop-guard: the auditor runs every {lim['audit_every']} iterations during the loop "
         f"(last after iteration {last}; next once iteration {last + lim['audit_every']} is finished). "

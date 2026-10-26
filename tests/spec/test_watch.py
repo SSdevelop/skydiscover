@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import time
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import pytest
@@ -46,12 +47,21 @@ def watchdog():
     return _load("watchdog")
 
 
+@pytest.mark.parametrize("spec", [None, ModuleSpec("missing_loader", None)])
+def test_watchdog_rejects_an_unloadable_hook(watchdog, monkeypatch, spec):
+    monkeypatch.setattr(watchdog.importlib.util, "spec_from_file_location", lambda *args: spec)
+    with pytest.raises(ImportError, match="Cannot load hook module"):
+        watchdog._load("run_state")
+
+
 def _line(kind: str, **message) -> str:
     return json.dumps({"type": kind, "message": message})
 
 
 ENDED = _line("assistant", stop_reason="end_turn", content=[{"type": "text", "text": "done"}])
-WAITING_ON_TOOL = _line("assistant", stop_reason="tool_use", content=[{"type": "tool_use", "name": "Bash"}])
+WAITING_ON_TOOL = _line(
+    "assistant", stop_reason="tool_use", content=[{"type": "tool_use", "name": "Bash"}]
+)
 TOOL_RESULT = _line("user", content=[{"type": "tool_result", "content": "ok"}])
 
 
@@ -73,24 +83,31 @@ def _setup(tmp_path: Path, helper_last: str, helper_age: float, files_age: float
     helper = main.with_suffix("") / "subagents" / "agent-eval.jsonl"
     helper.write_text(TOOL_RESULT + "\n" + helper_last + "\n")
     _age(helper, helper_age)
-    payload = {"cwd": str(run.path.parent.parent), "transcript_path": str(main),
-               "hook_event_name": "Stop", "tool_name": "Bash", "tool_input": {"command": "sleep 560"}}
+    payload = {
+        "cwd": str(run.path.parent.parent),
+        "transcript_path": str(main),
+        "hook_event_name": "Stop",
+        "tool_name": "Bash",
+        "tool_input": {"command": "sleep 560"},
+    }
     return run, main, payload
 
 
 def test_a_role_is_working_until_it_finishes(tmp_path, run_state):
     for last, age, working in [
-        (ENDED, 60, False),                 # finished a minute ago: done, not busy
+        (ENDED, 60, False),  # finished a minute ago: done, not busy
         (WAITING_ON_TOOL, 2 * HOUR, True),  # in a long benchmark: silent but not done
         (TOOL_RESULT, 2 * HOUR, True),
-        (ENDED, 2 * HOUR, False),           # finished two hours ago
+        (ENDED, 2 * HOUR, False),  # finished two hours ago
         (WAITING_ON_TOOL, 30 * HOUR, False),  # silent past the stall bound: gone
     ]:
         _, main, _ = _setup(tmp_path / f"{age}-{len(last)}", last, age, 0)
         assert bool(run_state.active_helpers(main)) is working, (last[:40], age)
 
 
-def test_the_budget_guard_lets_the_lead_wait_for_a_working_role(tmp_path, budget_guard, monkeypatch):
+def test_the_budget_guard_lets_the_lead_wait_for_a_working_role(
+    tmp_path, budget_guard, monkeypatch
+):
     monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)
     run, _, payload = _setup(tmp_path, WAITING_ON_TOOL, 2 * HOUR, 2 * HOUR)
     assert budget_guard.decide(payload) is None
@@ -107,7 +124,9 @@ def test_a_role_that_just_finished_does_not_let_the_lead_stop(tmp_path, budget_g
     assert reason and "0 of 10" in reason
 
 
-def test_the_guards_find_the_run_from_a_folder_below_the_project(tmp_path, budget_guard, monkeypatch):
+def test_the_guards_find_the_run_from_a_folder_below_the_project(
+    tmp_path, budget_guard, monkeypatch
+):
     """The rdma-bptree lead cd'ed into synthesis/bench/runs; from then on every hook looked for
     <that folder>/.skydiscover, found no run, and did nothing (no snapshots, no guards)."""
     monkeypatch.delenv("SKYDISCOVER_RUN", raising=False)

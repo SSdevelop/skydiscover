@@ -405,6 +405,7 @@ def _set_config(run: Run, config: dict) -> None:
         row["config"] = config
     run.leaderboard.write_text(json.dumps(rows))
 
+
 _COUNT_H = "int count();\n"
 _TEST_SH = """#!/usr/bin/env bash
 cd "$(dirname "$0")"
@@ -488,7 +489,9 @@ def test_export_falls_back_even_when_the_failed_best_was_measured_differently(tm
 
     (run.impl / "counter.cc").write_text(_FAST_BROKEN, encoding="utf-8")
     _set_config(run, {"ulimit_gb": 4})
-    _snapshot(run.path, tmp_path, became_best=True)  # checkpoint_2, measured differently, fails later
+    _snapshot(
+        run.path, tmp_path, became_best=True
+    )  # checkpoint_2, measured differently, fails later
 
     (run.tests / "check_floor.cc").write_text(_CHECK_FLOOR, encoding="utf-8")
     (run.impl / "counter.cc").write_text(_GOOD)

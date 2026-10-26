@@ -46,7 +46,10 @@ def _read_json(path: Path, default):
 def _head(repo: Path) -> Optional[str]:
     try:
         out = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -140,7 +143,9 @@ def reuse(run_dir: Path, *, force: bool = False) -> Dict[str, Any]:
         "fresh": sorted(n for n, s in systems.items() if s["fresh"]),
         "to_reverify": sorted(n for n, s in systems.items() if not s["fresh"]),
     }
-    (run.references / "reuse.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    (run.references / "reuse.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
     acq = _read_json(run.acquisitions, {})
     acq = acq if isinstance(acq, dict) else {}
     acq["reused_from_run"] = {"snapshot": str(snap), "systems": sorted(systems)}
@@ -159,7 +164,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     report = reuse(run.path, force=args.force)
     if not report:
-        print("reuse: no earlier discovery for this domain in the knowledge base; run full discovery")
+        print(
+            "reuse: no earlier discovery for this domain in the knowledge base; run full discovery"
+        )
         return 0
     print(f"reuse: copied discovery of {len(report['systems'])} system(s) from {report['from']}")
     print(f"  fresh (reuse as is): {', '.join(report['fresh']) or '-'}")

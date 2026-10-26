@@ -130,7 +130,7 @@ def _checkpoint_times(run: Path) -> List[Tuple[int, float]]:
     failed without a checkpoint; for a run without one, from its checkpoints."""
     rows = _read(run / "synthesis" / "bench" / "iterations.json")
     if isinstance(rows, list) and rows:
-        marks = []
+        marks: List[Tuple[int, float]] = []
         for r in rows:
             when = _parse_time(r.get("at")) if isinstance(r, dict) else None
             if when is not None:
@@ -233,7 +233,12 @@ def usage(
                 when = _parse_time(row.get("timestamp"))
                 if until is not None and when is not None and when > until:
                     continue
-                key = msg.get("id") or row.get("requestId") or row.get("uuid") or f"{path}:{len(seen)}"
+                key = (
+                    msg.get("id")
+                    or row.get("requestId")
+                    or row.get("uuid")
+                    or f"{path}:{len(seen)}"
+                )
                 u = msg["usage"]
                 entry = seen.setdefault(
                     key,
@@ -244,7 +249,10 @@ def usage(
                     entry[f] = max(entry[f], int(u.get(f) or 0))
                 if row.get("isSidechain") and agent == "lead":
                     entry["agent"] = "subagent"
-    total, by_model, by_agent, by_iteration = _zero(), {}, {}, {}
+    total = _zero()
+    by_model: Dict[str, Dict[str, int]] = {}
+    by_agent: Dict[str, Dict[str, int]] = {}
+    by_iteration: Dict[str, Dict[str, Any]] = {}
     for entry in seen.values():
         _add(total, entry)
         _add(by_model.setdefault(entry["model"], _zero()), entry)
@@ -253,7 +261,7 @@ def usage(
             it = by_iteration.setdefault(str(assign(entry["when"])), {**_zero(), "by_agent": {}})
             _add(it, entry)
             _add(it["by_agent"].setdefault(entry["agent"], _zero()), entry)
-    out = {"total": total, "by_model": by_model, "by_agent": by_agent}
+    out: Dict[str, Any] = {"total": total, "by_model": by_model, "by_agent": by_agent}
     if assign is not None:
         out["by_iteration"] = dict(sorted(by_iteration.items(), key=lambda kv: int(kv[0])))
     return out
@@ -303,13 +311,18 @@ def record(
             )
             doc = _read(run / USAGE_FILE)
             doc = doc if isinstance(doc, dict) else {}
-            sessions = doc.get("sessions") if isinstance(doc.get("sessions"), dict) else {}
+            sessions = doc.get("sessions")
+            if not isinstance(sessions, dict):
+                sessions = {}
             sessions[session_id] = {
                 "transcript": str(transcript),
                 "updated_at": _now(),
                 **counted,
             }
-            total, by_model, by_agent, by_iteration = _zero(), {}, {}, {}
+            total = _zero()
+            by_model: Dict[str, Dict[str, int]] = {}
+            by_agent: Dict[str, Dict[str, int]] = {}
+            by_iteration: Dict[str, Dict[str, Any]] = {}
             for s in sessions.values():
                 _add(total, s.get("total") or {"messages": 0})
                 for name, u in (s.get("by_model") or {}).items():
@@ -388,7 +401,9 @@ def _subagent_info(payload: Dict[str, Any], transcript: Path) -> Tuple[str, str]
     if agent_path:
         meta = _meta(Path(agent_path))
     if not meta and payload.get("agent_id"):
-        meta = _meta(transcript.with_suffix("") / "subagents" / f"agent-{payload['agent_id']}.jsonl")
+        meta = _meta(
+            transcript.with_suffix("") / "subagents" / f"agent-{payload['agent_id']}.jsonl"
+        )
     if not meta:
         subs = sorted(
             (transcript.with_suffix("") / "subagents").glob("*.meta.json"),
@@ -606,7 +621,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     for t in transcripts:
         doc = record(run, t.stem, t, "rebuild", until=until)
     for sid, s in doc["sessions"].items():
-        print(f"  {sid}  {s['total']['total_tokens']:>14,} tokens  ({s['total']['messages']} messages)")
+        print(
+            f"  {sid}  {s['total']['total_tokens']:>14,} tokens  ({s['total']['messages']} messages)"
+        )
     for k, it in doc["by_iteration"].items():
         roles = ", ".join(
             f"{n.split(':')[-1]} {u['total_tokens']:,}"

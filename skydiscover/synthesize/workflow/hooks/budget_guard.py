@@ -113,7 +113,7 @@ def stall_message(run: Path, idle_hours: float, done: int, n: int, rs) -> str:
         f"disk now: {rs.last_result(run)}. If the candidate of iteration {done + 1} passed the tests "
         "and was scored, write its checkpoint (`python3 -m skydiscover.synthesize.spec.checkpoint "
         f"snapshot {run}`); if it was not, close the iteration (`python3 -m "
-        f"skydiscover.synthesize.spec.iterations fail {run} --reason \"...\"`) and start iteration "
+        f'skydiscover.synthesize.spec.iterations fail {run} --reason "..."`) and start iteration '
         f"{done + 2} with the planner. Run every role in the foreground from here on."
     )
 
@@ -122,7 +122,9 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
     """The reason to refuse this stop, or None to let it through."""
     tu = _tokens()
     transcript = Path(payload.get("transcript_path") or "")
-    run = tu.find_run(Path(payload.get("cwd") or os.getcwd()), transcript if transcript.is_file() else None)
+    run = tu.find_run(
+        Path(payload.get("cwd") or os.getcwd()), transcript if transcript.is_file() else None
+    )
     if run is None:
         return None
     if (run.parent / f"{run.name}.done").exists():
@@ -154,18 +156,41 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
     if helpers:
         # Waiting for a role is legitimate: Claude Code wakes the lead when the role finishes.
         # Refusing here only pushes the lead into polling the disk inside one endless turn.
-        _log(run, {"allowed": "helpers still working", "helpers": helpers, "checkpoints": done, "budget": n})
+        _log(
+            run,
+            {
+                "allowed": "helpers still working",
+                "helpers": helpers,
+                "checkpoints": done,
+                "budget": n,
+            },
+        )
         return None
     idle_hours = rs.stalled(run, session, marks)
     state = _read(run / STATE) or {}
     streak = state.get("blocks", 0) + 1 if state.get("checkpoints") == done else 1
     if streak > MAX_BLOCKS:
-        _log(run, {"allowed": f"{MAX_BLOCKS} refusals without a new checkpoint", "checkpoints": done, "budget": n})
+        _log(
+            run,
+            {
+                "allowed": f"{MAX_BLOCKS} refusals without a new checkpoint",
+                "checkpoints": done,
+                "budget": n,
+            },
+        )
         (run / STATE).write_text(json.dumps({"checkpoints": done, "blocks": 0}), encoding="utf-8")
         return None
     (run / STATE).write_text(json.dumps({"checkpoints": done, "blocks": streak}), encoding="utf-8")
-    _log(run, {"blocked": True, "checkpoints": done, "budget": n, "streak": streak,
-               **({"stalled_hours": round(idle_hours, 1)} if idle_hours else {})})
+    _log(
+        run,
+        {
+            "blocked": True,
+            "checkpoints": done,
+            "budget": n,
+            "streak": streak,
+            **({"stalled_hours": round(idle_hours, 1)} if idle_hours else {}),
+        },
+    )
     if idle_hours:
         return stall_message(run, idle_hours, done, n, rs)
     return (
@@ -177,7 +202,7 @@ def decide(payload: Dict[str, Any]) -> Optional[str]:
         "performance evaluation), "
         "and block on each role until it reports instead of waiting. If you truly need the user's "
         "input, first run `python3 -m skydiscover.synthesize.spec.run pause "
-        f"{run} --reason \"<your question>\"`, then ask and end your turn. If the loop must end "
+        f'{run} --reason "<your question>"`, then ask and end your turn. If the loop must end '
         "early (a measured ceiling), record it in the decision log and go on to Phase 3 and "
         "`run finish`."
     )

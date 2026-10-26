@@ -110,7 +110,9 @@ def decide(payload: dict) -> Optional[str]:
             continue
         verb = os.path.basename(words[0])
         if verb in ("pkill", "killall"):
-            return _refuse(f"`{verb}` selects processes by name, so it cannot tell this run's from anyone else's")
+            return _refuse(
+                f"`{verb}` selects processes by name, so it cannot tell this run's from anyone else's"
+            )
         if verb != "kill":
             continue
         if re.search(r"\b(pgrep|pidof)\b", command):
@@ -128,7 +130,9 @@ def decide(payload: dict) -> Optional[str]:
                 targets += args[i + 1 :]
                 break
             named_signal = arg.startswith("-") and not re.fullmatch(r"-\d+", arg)  # -TERM, -KILL
-            numbered_signal = i == 0 and len(args) > 1 and re.fullmatch(r"-\d+", arg)  # kill -9 <pid>
+            numbered_signal = (
+                i == 0 and len(args) > 1 and re.fullmatch(r"-\d+", arg)
+            )  # kill -9 <pid>
             if named_signal or numbered_signal:
                 i += 1
                 continue

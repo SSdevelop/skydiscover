@@ -121,13 +121,17 @@ def last_progress(run: Path, transcript: Optional[Path], marks=()) -> float:
 def last_result(run: Path) -> str:
     """One line on the newest leaderboard entry, for a guard's message."""
     try:
-        rows = json.loads((run / "synthesis" / "bench" / "leaderboard.json").read_text(encoding="utf-8"))
+        rows = json.loads(
+            (run / "synthesis" / "bench" / "leaderboard.json").read_text(encoding="utf-8")
+        )
     except (OSError, ValueError):
         return "no leaderboard entry yet"
     if not isinstance(rows, list) or not rows:
         return "no leaderboard entry yet"
     row = rows[-1] if isinstance(rows[-1], dict) else {}
-    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    metrics = row.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
     head = next(iter(metrics.items()), None)
     return (
         f"the newest leaderboard entry is a {row.get('role', 'candidate')} {row.get('draw', 'scored')} "
@@ -135,7 +139,9 @@ def last_result(run: Path) -> str:
     )
 
 
-def stalled(run: Path, transcript: Optional[Path], marks=(), now: Optional[float] = None) -> Optional[float]:
+def stalled(
+    run: Path, transcript: Optional[Path], marks=(), now: Optional[float] = None
+) -> Optional[float]:
     """Hours since the last progress when that exceeds STALL_SECS and no helper is active; else None."""
     now = time.time() if now is None else now
     if active_helpers(transcript, now):

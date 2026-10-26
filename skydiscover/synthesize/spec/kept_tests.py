@@ -217,11 +217,15 @@ def sync(run_dir: Path, domain: str, *, refresh_bodies: bool = False) -> Dict[st
     dest = _store(domain).tests
     ccs = test_files(suite)
     script = suite / TEST_SCRIPT
-    history = dest / HISTORY / f"{time.strftime('%Y%m%d_%H%M%S', time.gmtime())}_{Run(run_dir).slug}"
+    history = (
+        dest / HISTORY / f"{time.strftime('%Y%m%d_%H%M%S', time.gmtime())}_{Run(run_dir).slug}"
+    )
     if ccs and script.is_file():
         dest.mkdir(parents=True, exist_ok=True)
         _copy_keeping_old(script, dest / TEST_SCRIPT, history / TEST_SCRIPT)
-        for helper in helper_files(suite):  # `_`-prefixed helpers travel with the tests that use them
+        for helper in helper_files(
+            suite
+        ):  # `_`-prefixed helpers travel with the tests that use them
             _copy_keeping_old(helper, dest / helper.name, history / helper.name)
         for sub in suite.iterdir():
             if sub.is_dir() and not sub.name.startswith(".") and sub.name != "__pycache__":

@@ -33,6 +33,8 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(
         f"_skysynth_{name}_wd", Path(__file__).resolve().parent / f"{name}.py"
     )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load hook module: {name}")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -72,13 +74,20 @@ def decide(payload: Dict[str, Any], now: Optional[float] = None) -> Optional[str
     (run / STATE).write_text(json.dumps({"warned_at": now}), encoding="utf-8")
     try:
         with open(run / LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "stalled_hours": round(idle_hours, 1),
-                "finished": len(marks),
-                "budget": n,
-                "command": str((payload.get("tool_input") or {}).get("command") or "")[:300],
-            }) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "stalled_hours": round(idle_hours, 1),
+                        "finished": len(marks),
+                        "budget": n,
+                        "command": str((payload.get("tool_input") or {}).get("command") or "")[
+                            :300
+                        ],
+                    }
+                )
+                + "\n"
+            )
     except OSError:
         pass
     return "watchdog: " + bg.stall_message(run, idle_hours, len(marks), n or 0, rs)
