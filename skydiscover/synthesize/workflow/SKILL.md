@@ -281,7 +281,8 @@ Run a fresh agent for each step; every brief is in `agents/2-synthesis-loop/`:
    test-passing candidate at the declared configuration, appends the leaderboard, names the
    measured bottleneck (or the scored cases lost, when the score is not a rate), and writes the
    iteration's checkpoint right after its leaderboard append. For scored IDS, use
-   `spec.evaluation run`: it checks the full code-and-proof snapshot before executing the
+   the administrator's fixed trusted-evaluation wrapper (setup:
+   `skydiscover/synthesize/TRUSTED_EVALUATION.md`): it checks the full code-and-proof snapshot before executing the
    benchmark and returns the evidence the leaderboard row must name. Every iteration, whatever the
    benchmark scores. The checkpoint binds one coding-agent change to one scored evaluation (the
    artifact bytes and the leaderboard entry); it refuses an unscored artifact, and it is written
@@ -404,7 +405,8 @@ Tell the user one path: the result.
    and proof together. Failure to prove is not a confirmed implementation defect. Tool problems
    may instead require repair or a pause; never silently fall back to test-only correctness.
 5. Once all obligations and integration checks pass, hand the complete candidate to the evaluator.
-   It uses `spec.evaluation run` on a snapshot, then records metrics and the returned receipt.
+   It invokes the approved trusted evaluator on a snapshot, then records the returned metrics
+   and authenticated receipt. A local unsigned evaluation cannot authorize a scored checkpoint.
    Proof-only repair and code changes after measurement both invalidate that measurement.
 6. Continue the usual checkpoint, periodic independent audit, critic, and next optimization round.
    Final delivery replays the checker on the selected exported code-and-proof artifact. A proof
@@ -489,7 +491,7 @@ Prefix each with `python3 -m skydiscover.synthesize.`:
 ```text
 spec.paths run <slug>                       create the run directory; prints its path
 spec.paths domain "<name>"                  the knowledge base folder a domain name maps to
-spec.evaluation run <run> --config '<JSON object>' -- <benchmark command>   check code + proof before measurement
+spec.evaluation run <run> --config '<JSON object>' -- <benchmark command>   unsigned debugging measurement
 spec.ids feedback <run> --report <report.json>   send a candidate-bound blocker to the planner
 spec.ids blockers <run>                     read IDS feedback and its current/historical status
 spec.requirements check <run>/specification/questions.json

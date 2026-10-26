@@ -1,10 +1,14 @@
-"""Check a frozen code-and-proof candidate before running its performance command.
+"""Locally debug a frozen code-and-proof candidate and its performance command.
 
     evaluation run <run> --config '{"threads": 4}' -- bash synthesis/evaluator/score.sh
 
 The command runs from a copy of the run's inputs. SKYDISCOVER_RUN, SKYDISCOVER_IMPL and
 SKYDISCOVER_INTERFACE name that copy; SKYDISCOVER_EVALUATION names the directory for build
 outputs. The task's full test.sh must invoke its proof checker and required integration tests.
+The benchmark's final nonempty output line must be a JSON object of finite numeric metrics,
+for example {"throughput": 12}. These measured values are bound to the receipt and leaderboard.
+This local command creates an unsigned receipt. Official scores require evaluation_authority,
+whose protected canonical record is authenticated during checkpoint creation and export.
 This records execution and input identity, not theorem semantics: the task owns its checker,
 toolchain pins, and the build/extraction correspondence between proved and measured code.
 """
@@ -13,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import signal
@@ -28,7 +33,15 @@ from .paths import Run, run_cli
 _RUN_TESTS = Path(__file__).resolve().parent.parent / "workflow/scripts/run_tests.py"
 
 
-def _execute(command: list[str], cwd: Path, env: dict[str, str], log: Path, timeout: int) -> None:
+def _execute(
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    log: Path,
+    timeout: int,
+    *,
+    worker: tuple[int, int] | None = None,
+) -> None:
     """Run one bounded process group, keeping diagnostics even on failure."""
     with log.open("w", encoding="utf-8") as output:
         try:
@@ -39,6 +52,10 @@ def _execute(command: list[str], cwd: Path, env: dict[str, str], log: Path, time
                 stdout=output,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                user=worker[0] if worker is not None else None,
+                group=worker[1] if worker is not None else None,
+                extra_groups=[] if worker is not None else None,
+                umask=0o077 if worker is not None else -1,
             )
         except OSError as exc:
             raise ValueError(f"Could not start {command[0]}: {exc}; logs: {log}") from exc
@@ -57,9 +74,9 @@ def _execute(command: list[str], cwd: Path, env: dict[str, str], log: Path, time
         raise ValueError(f"Command exited {code}; no accepted evaluation. Logs: {log}")
 
 
-def _environment(run: Run, entry: Path, output: Path) -> dict[str, str]:
+def _environment(run: Run, entry: Path, output: Path, base=None) -> dict[str, str]:
     return {
-        **os.environ,
+        **(os.environ if base is None else base),
         "SKYDISCOVER_RUN": str(run.path.resolve()),
         "SKYDISCOVER_IMPL": str(entry.resolve()),
         "SKYDISCOVER_INTERFACE": str(run.interface.resolve()),
@@ -67,7 +84,9 @@ def _environment(run: Run, entry: Path, output: Path) -> dict[str, str]:
     }
 
 
-def _check(run: Run, entry: Path, output: Path, log: Path, timeout: int) -> None:
+def _check(
+    run: Run, entry: Path, output: Path, log: Path, timeout: int, *, worker=None, env=None
+) -> None:
     _execute(
         [
             sys.executable,
@@ -79,9 +98,10 @@ def _check(run: Run, entry: Path, output: Path, log: Path, timeout: int) -> None
             "--show-output",
         ],
         run.path,
-        {**_environment(run, entry, output), "SKYDISCOVER_SLOW_SECS": str(timeout)},
+        {**_environment(run, entry, output, env), "SKYDISCOVER_SLOW_SECS": str(timeout)},
         log,
         timeout,
+        worker=worker,
     )
 
 
@@ -105,6 +125,36 @@ def _copy_inputs(run: Run, destination: Path) -> Run:
     return frozen
 
 
+def _measurement_metrics(log: Path) -> dict[str, int | float]:
+    """Read the benchmark's explicit result, never infer numbers from diagnostic prose."""
+
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"Duplicate metric: {key}")
+            result[key] = value
+        return result
+
+    try:
+        lines = [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+        metrics = json.loads(lines[-1], object_pairs_hook=unique_keys)
+        if (
+            not isinstance(metrics, dict)
+            or not metrics
+            or any(
+                not key or type(value) not in (int, float) or not math.isfinite(value)
+                for key, value in metrics.items()
+            )
+        ):
+            raise ValueError("Expected finite numeric metrics")
+    except (OSError, UnicodeError, ValueError, IndexError, OverflowError) as exc:
+        raise ValueError(
+            f"Benchmark must end with a JSON object of finite numeric metrics. Logs: {log}"
+        ) from exc
+    return metrics
+
+
 def evaluate(
     run_dir: Path,
     command: list[str],
@@ -112,6 +162,8 @@ def evaluate(
     *,
     timeout: int = 600,
     check_timeout: int = 600,
+    _worker: tuple[int, int] | None = None,
+    _env: dict[str, str] | None = None,
 ) -> Path:
     """Return a receipt only after full checking followed by successful measurement."""
     run = Run(run_dir.resolve())
@@ -132,6 +184,15 @@ def evaluate(
     output = Path(tempfile.mkdtemp(prefix="evaluation-", dir=runs))
     frozen = _copy_inputs(run, output / "inputs")
     frozen_entry = frozen.path / relative_entry
+    build = output
+    if _worker is not None:
+        # The trusted evaluator owns inputs/logs; candidate processes can write only build products.
+        output.chmod(0o755)
+        for path in [frozen.path, *frozen.path.rglob("*")]:
+            path.chmod(0o755 if path.is_dir() else 0o444 | (path.stat().st_mode & 0o111))
+        build = output / "build"
+        build.mkdir(mode=0o700)
+        os.chown(build, *_worker)
 
     def unchanged() -> None:
         if any(checkpoint.input_digests(r.path, audit=True) != bindings for r in (run, frozen)):
@@ -140,27 +201,32 @@ def evaluate(
             )
 
     unchanged()
-    _check(frozen, frozen_entry, output, output / "checks.log", check_timeout)
+    _check(
+        frozen, frozen_entry, build, output / "checks.log", check_timeout, worker=_worker, env=_env
+    )
     unchanged()
     _execute(
         command,
         frozen.path,
-        _environment(frozen, frozen_entry, output),
+        _environment(frozen, frozen_entry, build, _env),
         output / "measurement.log",
         timeout,
+        worker=_worker,
     )
     unchanged()
+    metrics = _measurement_metrics(output / "measurement.log")
     receipt = output / "evaluation.json"
     checkpoint._write_json(
         receipt,
         {
-            "schema": 1,
+            "schema": 2,
             "status": "passed",
             "created_at": checkpoint._utc_now(),
             "input_digests": inputs,
             "verification_inputs": bindings,
             "impl": relative_entry.as_posix(),
             "config": config,
+            "metrics": metrics,
             "command": command,
             "check_timeout": check_timeout,
             "logs": {
@@ -194,15 +260,41 @@ def validate(run_dir: Path, row: dict, inputs: dict) -> Path:
     entry = run.entry_impl()
     if (
         not isinstance(doc, dict)
-        or doc.get("schema") != 1
+        or doc.get("schema") != 2
         or doc.get("status") != "passed"
         or doc.get("input_digests") != inputs
         or doc.get("config") != row.get("config")
         or entry is None
         or doc.get("impl") != entry.resolve().relative_to(run.path).as_posix()
     ):
-        raise ValueError("Evaluation receipt does not cover this candidate and configuration")
-    frozen = Run(receipt.parent / "inputs")
+        raise ValueError(
+            "Evaluation receipt does not cover this candidate and configuration; "
+            "rerun evaluation for a schema 2 receipt with measured metrics"
+        )
+    metrics = _validate_evidence(receipt.parent, doc, inputs)
+    row_metrics = row.get("metrics")
+    if (
+        not isinstance(row_metrics, dict)
+        or any(type(value) not in (int, float) for value in row_metrics.values())
+        or row_metrics != metrics
+    ):
+        raise ValueError("Leaderboard metrics differ from the measured metrics")
+    return receipt.parent
+
+
+def _validate_evidence(output: Path, doc: dict, inputs: dict) -> dict:
+    """Authenticate the issued result, then verify the accompanying snapshot and logs."""
+    if (
+        not isinstance(doc, dict)
+        or doc.get("schema") != 2
+        or doc.get("status") != "passed"
+        or doc.get("input_digests") != inputs
+    ):
+        raise ValueError("Evaluation receipt lacks bound metrics; rerun evaluation")
+    from .evaluation_authority import authenticate
+
+    authenticate(doc)
+    frozen = Run(output / "inputs")
     if checkpoint.input_digests(frozen.path) != inputs or checkpoint.input_digests(
         frozen.path, audit=True
     ) != doc.get("verification_inputs"):
@@ -211,10 +303,32 @@ def validate(run_dir: Path, row: dict, inputs: dict) -> Path:
     if not isinstance(logs, dict):
         raise ValueError("Evaluation receipt has no log digests")
     for name in ("checks.log", "measurement.log"):
-        log = receipt.parent / name
+        log = output / name
         if not log.is_file() or logs.get(name) != checkpoint._tree_digest(log):
             raise ValueError(f"Evaluation evidence is missing or changed: {name}")
-    return receipt.parent
+    # The protected record binds both these metrics and the log digest. Re-parsing an editable
+    # log cannot add authenticity; only the trusted evaluator parses benchmark output.
+    return doc["metrics"]
+
+
+def validate_checkpoint_score(saved: Path) -> None:
+    """Do not export a saved score without its own matching measurement evidence."""
+    record = checkpoint.read_record(saved)
+    output = saved / ".verification/evaluation"
+    doc = checkpoint._read_json(output / "evaluation.json", {})
+    metrics = _validate_evidence(output, doc, record.get("inputs", {}))
+    if doc.get("config") != record.get("config"):
+        raise ValueError("Checkpoint configuration differs from the measured configuration")
+    score = checkpoint.read_score(saved).get("score")
+    if (
+        not isinstance(score, dict)
+        or len(score) != 1
+        or any(
+            key not in metrics or type(value) not in (int, float) or value != metrics[key]
+            for key, value in score.items()
+        )
+    ):
+        raise ValueError("Checkpoint score differs from the measured metrics")
 
 
 def recheck(run_dir: Path, row: dict, inputs: dict) -> Path:
@@ -260,6 +374,7 @@ def main(argv=None) -> int:
                 "input_digests": doc["input_digests"],
                 "impl": doc["impl"],
                 "config": doc["config"],
+                "metrics": doc["metrics"],
             },
             indent=2,
         )

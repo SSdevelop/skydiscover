@@ -61,7 +61,11 @@ def _utc_now() -> str:
 
 
 def _tree_digest(root: Path, *, ignored=()) -> str:
-    """Hash file names and bytes, including hidden dependencies but excluding runtime caches."""
+    """Hash paths, executable bits and contents, excluding runtime caches.
+
+    Read/write permissions may change on a protected copy; executable bits may not. Framed
+    manifest entries prevent file contents from being mistaken for subsequent path/mode fields.
+    """
     if root.is_symlink():
         raise ValueError(f"Record real dependency files instead of symlinks: {root}")
     digest = hashlib.sha256()
@@ -73,8 +77,13 @@ def _tree_digest(root: Path, *, ignored=()) -> str:
         if path.is_symlink():
             raise ValueError(f"Record real dependency files instead of symlinks: {path}")
         if path.is_file():
-            digest.update(relative.as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
-    return f"sha256:{digest.hexdigest()}"
+            entry = [
+                relative.as_posix(),
+                path.stat().st_mode & 0o111,
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            ]
+            digest.update(json.dumps(entry, separators=(",", ":")).encode() + b"\n")
+    return f"sha256-exec-v2:{digest.hexdigest()}"
 
 
 def _copy_mismatch(source: Path, copy: Path, limit: int = 3) -> list[str]:
@@ -94,7 +103,12 @@ def _copy_mismatch(source: Path, copy: Path, limit: int = 3) -> list[str]:
     out = []
     for name in names:
         a, b = left.get(name), right.get(name)
-        if a is None or b is None or a.read_bytes() != b.read_bytes():
+        if (
+            a is None
+            or b is None
+            or a.read_bytes() != b.read_bytes()
+            or (a.stat().st_mode & 0o111) != (b.stat().st_mode & 0o111)
+        ):
             out.append(name)
         if len(out) >= limit:
             break
@@ -334,6 +348,8 @@ def _stage_artifact(artifact: Path, contract: Optional[Path], into: Path) -> Pat
     """Copy the candidate to `into`/artifact and fold the interface's source files in."""
     staged = into / "artifact"
     shutil.copytree(artifact, staged, ignore=_copy_ignore)
+    if _tree_digest(staged) != _tree_digest(artifact):
+        raise ValueError("The artifact copy changed content or executable permissions")
     if contract is not None:
         _merge_missing(contract, staged)
         if (contract / "__init__.py").is_file():
@@ -578,6 +594,20 @@ def write_checkpoint(
                 raise ValueError(
                     "Inputs changed while saving the checkpoint; measure the stable version again."
                 )
+            if run.co_generates_proof():
+                from .evaluation import validate_checkpoint_score
+
+                validate_checkpoint_score(staged)
+                if _tree_digest(private / "source") != (inputs or {}).get("implementation"):
+                    raise ValueError("Staged source differs from the measured candidate")
+                with tempfile.TemporaryDirectory() as tmp:
+                    expected = _stage_artifact(
+                        private / "evaluation/inputs/synthesis/impl",
+                        private / "evaluation/inputs/synthesis/evaluator/interface",
+                        Path(tmp),
+                    )
+                    if _tree_digest(expected) != artifact_digest(staged):
+                        raise ValueError("Staged artifact differs from the measured candidate")
         os.replace(staged, destination)
     except BaseException:
         if staged.exists():

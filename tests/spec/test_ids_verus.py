@@ -9,12 +9,13 @@ import sys
 
 import pytest
 
-from skydiscover.synthesize.spec import checkpoint, evaluation
+from skydiscover.synthesize.spec import checkpoint, evaluation, evaluation_authority
 from skydiscover.synthesize.spec import run as spec_run
 from skydiscover.synthesize.spec.paths import Run
 
 
 @pytest.mark.integration
+@pytest.mark.usefixtures("fake_evaluation_authority")
 def test_verus_candidate_is_proved_before_runtime_measurement(tmp_path, monkeypatch):
     verus = os.environ.get("SKYDISCOVER_VERUS") or shutil.which("verus")
     if not verus:
@@ -69,6 +70,7 @@ def test_verus_candidate_is_proved_before_runtime_measurement(tmp_path, monkeypa
     )
     command = [sys.executable, "synthesis/evaluator/score.py"]
     receipt = evaluation.evaluate(run.path, command, {}, timeout=120, check_timeout=120)
+    checkpoint._write_json(receipt, evaluation_authority.seal(json.loads(receipt.read_text())))
     log = (receipt.parent / "measurement.log").read_text()
     metrics = json.loads(log.splitlines()[-1])
     assert metrics["elapsed_ns"] > 0

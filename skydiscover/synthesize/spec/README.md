@@ -14,6 +14,7 @@ spec/
   run.py                  `run check` before the loop, `run finish` after it
   checkpoint.py           each scored iteration, and the best one published under outputs/synthesize/
   evaluation.py           full proof/integration check, then benchmark on the same input snapshot
+  evaluation_authority.py approved evaluation under separate UIDs, with protected score records
   ids.py                  candidate-bound proof-search blockers for the outer planner
   render.py               best/spec.md, filled from the cards
   paths.py                where runs, results, and the knowledge base live (config.toml)
@@ -27,9 +28,10 @@ python3 -m skydiscover.synthesize.spec.run check <run_dir>
 ```
 
 For co-generation before performance evaluation, task front matter includes `checked_by: proof`
-and `optimize: performance`. Run `spec.evaluation run <run> --config '<JSON object>' -- <command>`
-after IDS produces a candidate; the returned receipt and input fields accompany its leaderboard
-row. The command executes the task's full proof suite before the benchmark. Checkpoint creation
+and `optimize: performance`. After IDS produces a candidate, invoke the administrator's fixed
+trusted-evaluation wrapper; see [Linux/WSL setup](../TRUSTED_EVALUATION.md). The returned receipt
+and measured fields accompany its leaderboard row. Local `spec.evaluation run` is an unsigned
+debugging path. The trusted evaluator executes the full proof suite before the benchmark. Checkpoint creation
 replays that suite and retains the measured code-and-proof snapshot. `spec.ids feedback` records
 diagnosed search blockers; `spec.ids blockers` distinguishes current reports from history.
 Existing proof-only tasks (no `optimize` key) and test-driven scoring retain their behavior.

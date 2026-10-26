@@ -44,8 +44,10 @@ scores it, and the Critic guides the next round.
 For code-and-proof co-generation before performance evaluation, put both `checked_by: proof`
 and `optimize: performance` in `task.md` front matter. DSA develops implementation and proof
 together; ISA diagnoses stalls and sends design blockers to the Planner. Only a complete
-machine-checked candidate reaches the performance evaluator. `spec.evaluation run` checks a
-snapshot before benchmarking it, and checkpoints retain the proof and evaluation evidence.
+machine-checked candidate reaches the performance evaluator. An administrator-approved
+[trusted evaluator](TRUSTED_EVALUATION.md) checks a protected snapshot before benchmarking it;
+checkpoints retain and authenticate its proof and performance evidence. Local
+`spec.evaluation run` remains available for unsigned debugging measurements.
 The Auditor remains an independent review of coverage, assumptions, and runtime integration.
 Existing proof-only tasks omit `optimize` and need no benchmark.
 

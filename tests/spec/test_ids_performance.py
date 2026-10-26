@@ -8,9 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from skydiscover.synthesize.spec import checkpoint, evaluation, ids, iterations
+from skydiscover.synthesize.spec import checkpoint, evaluation
+from skydiscover.synthesize.spec import evaluation_authority as authority
+from skydiscover.synthesize.spec import ids, iterations
 from skydiscover.synthesize.spec import run as spec_run
 from skydiscover.synthesize.spec.paths import Run
+
+pytestmark = pytest.mark.usefixtures("fake_evaluation_authority")
 
 
 def _run(tmp_path: Path) -> Run:
@@ -38,9 +42,11 @@ def _run(tmp_path: Path) -> Run:
 
 
 def _evaluate(run: Run, **kwargs) -> Path:
-    return evaluation.evaluate(
+    receipt = evaluation.evaluate(
         run.path, [sys.executable, "synthesis/evaluator/score.py"], {"threads": 4}, **kwargs
     )
+    checkpoint._write_json(receipt, authority.seal(json.loads(receipt.read_text())))
+    return receipt
 
 
 def _record(run: Run, receipt: Path) -> dict:
@@ -50,7 +56,7 @@ def _record(run: Run, receipt: Path) -> dict:
         "input_digests": doc["input_digests"],
         "config": doc["config"],
         "evaluation": receipt.relative_to(run.path).as_posix(),
-        "metrics": {"throughput": 12},
+        "metrics": doc["metrics"],
         "objective": "throughput",
     }
     run.leaderboard.write_text(json.dumps([row]))
@@ -277,7 +283,9 @@ def test_evaluation_cli_keeps_benchmark_arguments_and_returns_row_fields(tmp_pat
     )
     row = json.loads(capsys.readouterr().out)
     assert row["config"] == {"threads": 4}
-    assert evaluation.validate(run.path, row, checkpoint.input_digests(run.path)).is_dir()
+    assert row["metrics"] == {"throughput": 12}
+    with pytest.raises(ValueError, match="attestation"):
+        evaluation.validate(run.path, row, checkpoint.input_digests(run.path))
 
 
 def test_successful_checker_output_is_preserved(tmp_path):
@@ -295,7 +303,7 @@ def test_invalid_receipt_log_schema_fails_cleanly(tmp_path):
     doc = json.loads(receipt.read_text())
     doc["logs"] = []
     receipt.write_text(json.dumps(doc))
-    with pytest.raises(ValueError, match="log digests"):
+    with pytest.raises(ValueError, match="trusted evaluation record"):
         checkpoint.snapshot_run(run.path, tmp_path)
 
 

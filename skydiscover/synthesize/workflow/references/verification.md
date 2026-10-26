@@ -12,19 +12,31 @@ required obligations, excludes unauthorized assumptions and escape hatches, and 
 integration checks. Pin dependencies and tools in verification inputs and check those pins in
 the suite. Partial verification, compilation without verification, and tool failure are not passes.
 
-The evaluator calls `spec.evaluation run <run> --config '<JSON object>' -- <benchmark command>`.
-It copies the candidate code AND proof, task, specification, tests, and evaluator into a snapshot
+The evaluator invokes the administrator's fixed trusted-evaluation wrapper, described in
+`skydiscover/synthesize/TRUSTED_EVALUATION.md`. Its approved policy pins the task, specification, checker, evaluator,
+command and configuration. Local `spec.evaluation run` is an unsigned debugging path; it cannot
+authorize a scored checkpoint. The trusted evaluator copies the candidate code AND proof, task,
+specification, tests, and evaluator into a protected snapshot
 under `synthesis/bench/runs/evaluation-<id>/inputs/`. It runs the full suite there first, then
 executes the command there, and emits `evaluation.json` only if both finish successfully and the
-snapshot and original inputs remain unchanged. Logs remain on failure. Timeouts kill the process
+measured input copies remain unchanged. Logs are returned on failure without an accepted receipt. Timeouts kill the process
 group the helper started. Commands use the snapshot's environment paths and write build output
-to `SKYDISCOVER_EVALUATION`, outside `inputs/`.
+to `SKYDISCOVER_EVALUATION`, outside `inputs/`. The command's final nonempty output line must be
+a JSON object of finite numeric metrics, for example `{"throughput": 12}`. Any format-conversion
+adapter belongs under `evaluator/`, within the frozen inputs. Invalid or missing metrics produce
+no receipt. Schema 2 receipts record these metrics and the CLI returns them for the leaderboard.
 
 The candidate row adds `evaluation: synthesis/bench/runs/evaluation-<id>/evaluation.json` to the
-usual measurement fields. Its config, entry, and digests must match the receipt. Checkpoint creation
+usual measurement fields. Its config, entry, digests, and metrics must match the receipt. Metric
+values are also checked against the hashed measurement log and the root-owned canonical receipt.
+Editing the leaderboard, log, receipt and hash together therefore fails authentication. The trust
+store and installed verifier must be outside the agent's write permissions. Old receipts and
+input digests without executable bits require re-evaluation.
+Checkpoint creation
 checks the receipt and its logs, reruns the full checker on the measured snapshot, and saves it
 under `.verification/evaluation/`; code and proof live together in `.verification/source/`.
-Final export still checks the selected artifact in a relocated directory with the current suite.
+Final export validates the selected checkpoint's score against its preserved measurement evidence,
+then checks the selected artifact in a relocated directory with the current suite.
 Reverting restores the pair, never executable code alone. Any change to code or proof requires
 a new evaluation before scoring that revision.
 

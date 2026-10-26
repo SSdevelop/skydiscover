@@ -103,23 +103,30 @@ A test that cannot fail a broken implementation is not a test. Check it before y
 
 When `task.md` has `checked_by: proof` and `optimize: performance`, DSA supplies the complete
 implementation AND proof. Never measure first and ask the auditor to prove it later.
-For each scored candidate (and any candidate held-out measurement), run:
+For each scored candidate (and any candidate held-out measurement), invoke the administrator's
+fixed trusted-evaluation wrapper for this run. Setup and the Linux/WSL permission boundary are
+in `skydiscover/synthesize/TRUSTED_EVALUATION.md`. The trusted evaluator pins the task command and configuration;
+the agent cannot substitute a command or change the checker/benchmark to obtain a receipt.
+Local `spec.evaluation run` is for debugging and produces an unsigned, unscorable receipt.
+If no trusted evaluator is configured, report the setup requirement; do not manufacture an attestation.
 
-```bash
-python3 -m skydiscover.synthesize.spec.evaluation run <run> --config '{"threads": 4}' \
-  -- bash synthesis/evaluator/benchmark/score.sh
-```
-
-Use the actual task command and configuration. The command runs from a snapshot of the run's
+The command runs from a protected snapshot of the run's
 inputs, after the full proof/integration suite passes. `SKYDISCOVER_IMPL`, `SKYDISCOVER_INTERFACE`,
 and `SKYDISCOVER_RUN` point inside that snapshot; `SKYDISCOVER_EVALUATION` is for build output.
 Use run-relative script paths and the declared extraction/build route to the proved implementation.
 Keep build outputs outside the snapshot. Stop writers before evaluation. The helper checks input
-digests before and after both stages; it is not an OS sandbox or a semantic equivalence prover.
+digests before and after both stages. Checker and benchmark run under an unprivileged worker UID;
+the authoritative record is written separately by the trusted evaluator. The task adapter still owns
+the semantic correspondence between proved and measured code.
 
-The returned JSON supplies `evaluation`, `input_digests`, `impl`, and `config` for the candidate
-leaderboard row. Read measured metrics from the adjacent `measurement.log` and retain the receipt
-and logs; do not invent or edit them. This replaces the manual input capture/benchmark invocation
+The benchmark must end its output with a single-line JSON object of finite numeric metrics,
+such as `{"throughput": 12}`. Diagnostics may precede it; empty trailing lines are allowed.
+If the benchmark uses another format, put its parsing adapter under `evaluator/` so it is part
+of the frozen inputs. Missing, duplicate, nonnumeric, or nonfinite metrics fail evaluation.
+The returned JSON supplies `evaluation`, `input_digests`, `impl`, `config`, and `metrics` for the
+candidate leaderboard row. Copy those fields unchanged and retain the receipt and logs. Metrics
+must match the receipt, its hashed `measurement.log`, and the protected trusted evaluator record. Old
+receipts and input digests without executable bits require a new evaluation. This replaces the manual input capture/benchmark invocation
 in step 3 below. `checkpoint snapshot` requires matching evidence, replays the checker, and
 preserves the entire code-and-proof evaluation. Failed checks, tool failures, unsupported operations,
 timeouts, and changed inputs return to IDS with diagnostics; none authorizes a score or test-only
