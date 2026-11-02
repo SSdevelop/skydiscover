@@ -66,6 +66,78 @@ def _child(code, *args):
     )
 
 
+@pytest.mark.parametrize("change", ["entry", "config"])
+def test_agent_export_binds_entry_and_retains_config_with_real_receipts(layout, change):
+    import shutil
+
+    root, run = layout
+    for name in ("fast", "slow"):
+        folder = run.impl / name
+        folder.mkdir()
+        for source in ("code.txt", "proof.txt"):
+            shutil.copyfile(run.impl / source, folder / source)
+    run.bench.mkdir(exist_ok=True)
+    run.leaderboard.write_text(json.dumps([{"impl": "synthesis/impl/fast"}]))
+    for path in [root / "agent", *(root / "agent").rglob("*")]:
+        os.chown(path, *AGENT)
+    command = [sys.executable, "synthesis/evaluator/score.py"]
+    authority.authorize("first", run.path, command, {"threads": 4}, agent=AGENT, worker=WORKER)
+    row = authority.measure("first", run.path)
+    setup = (
+        "import sys,json,os; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
+        "from skydiscover.synthesize.spec import checkpoint,evaluation,evaluation_authority as a; "
+        "from skydiscover.synthesize.spec import run as r; "
+        "from skydiscover.synthesize.spec.paths import Run; "
+        "a._ROOT=Path(sys.argv[2]); run=Run(Path(sys.argv[3])); "
+        "os.environ['HOME']=str(run.path.parent.parent.parent); "
+    )
+    saved = _child(
+        setup + "run.leaderboard.write_text(json.dumps([json.loads(sys.argv[4])])); "
+        "out,cp=checkpoint.snapshot_run(run.path,run.path.parent.parent,became_best=True); "
+        "(run.path/'selected.json').write_text(json.dumps({'out':str(out),'cp':str(cp)}))",
+        Path(authority.__file__).resolve().parents[3],
+        authority._ROOT,
+        run.path,
+        json.dumps(row),
+    )
+    assert saved.returncode == 0, saved.stderr
+    if change == "entry":
+        run.leaderboard.write_text(json.dumps([{"impl": "synthesis/impl/slow"}]))
+    authority.authorize("second", run.path, command, {"threads": 8}, agent=AGENT, worker=WORKER)
+    latest = authority.measure("second", run.path)
+    code = setup + """
+run.leaderboard.write_text(json.dumps([json.loads(sys.argv[4])]))
+selection=json.loads((run.path/'selected.json').read_text())
+cp=Path(selection['cp'])
+if sys.argv[5]=='entry':
+    record=checkpoint.read_record(cp)
+    record['entry']='slow'
+    checkpoint._write_json(cp/'.verification/record.json',record)
+checkpoint.stamp_audit(run.path,[])
+if sys.argv[5]=='entry':
+    try:
+        r.export_deliverable(run.path,run.path.parent.parent)
+    except ValueError as exc:
+        assert 'entry' in str(exc), str(exc)
+    else:
+        raise AssertionError('forged entry exported')
+else:
+    r.export_deliverable(run.path,run.path.parent.parent)
+    best=Path(selection['out'])/'best'
+    assert checkpoint.read_record(best)['config']=={'threads':4}
+    evaluation.validate_checkpoint_score(best)
+"""
+    result = _child(
+        code,
+        Path(authority.__file__).resolve().parents[3],
+        authority._ROOT,
+        run.path,
+        json.dumps(latest),
+        change,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_authority_measures_unprivileged_and_exports_honest_score(layout, monkeypatch):
     root, run = layout
     (run.impl / "build").mkdir()

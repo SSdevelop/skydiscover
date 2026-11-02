@@ -2,11 +2,14 @@
 
 import json
 import os
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
 from skydiscover.synthesize.spec import checkpoint, evaluation
+from skydiscover.synthesize.spec import evaluation_authority as authority
 from skydiscover.synthesize.spec import run as spec_run
 from tests.spec.test_ids_performance import _evaluate, _record, _run
 
@@ -138,3 +141,70 @@ def test_export_keeps_selected_checkpoints_own_measurement(tmp_path, monkeypatch
     checkpoint.stamp_audit(run.path, [])
     spec_run.export_deliverable(run.path, tmp_path)
     assert json.loads((out / "best/score.json").read_text())["score"] == {"throughput": 12}
+
+
+def test_export_preserves_selected_measurement_config_and_direction(tmp_path):
+    run = _run(tmp_path)
+    _record(run, _evaluate(run))
+    out, saved = checkpoint.snapshot_run(run.path, tmp_path, became_best=True)
+    receipt = evaluation.evaluate(
+        run.path, [sys.executable, "synthesis/evaluator/score.py"], {"threads": 8}
+    )
+    checkpoint._write_json(receipt, authority.seal(json.loads(receipt.read_text())))
+    row = _record(run, receipt)
+    row["direction"] = "min"
+    baseline = dict(row, role="baseline", name="eight-thread-reference", metrics={"throughput": 6})
+    run.leaderboard.write_text(json.dumps([baseline, row]))
+    checkpoint.stamp_audit(run.path, [])
+    spec_run.export_deliverable(run.path, tmp_path)
+    record = checkpoint.read_record(out / "best")
+    assert record["config"] == {"threads": 4}
+    assert record["direction"] == "max"
+    assert record["config"] == checkpoint.read_record(saved)["config"]
+    assert not checkpoint.read_score(out / "best").get("baselines")
+    evaluation.validate_checkpoint_score(out / "best")
+
+
+@pytest.mark.parametrize("entry", [".", "fast", "fast/code.txt"])
+def test_checkpoint_entry_must_match_trusted_receipt(tmp_path, entry):
+    run = _run(tmp_path)
+    _record(run, _evaluate(run))
+    _, saved = checkpoint.snapshot_run(run.path, tmp_path, became_best=True)
+    evaluation.validate_checkpoint_score(saved)  # The directory entry '.' is valid.
+    if entry == ".":
+        return
+    record = checkpoint.read_record(saved)
+    record["entry"] = entry
+    checkpoint._write_json(saved / ".verification/record.json", record)
+    with pytest.raises(ValueError, match="entry"):
+        evaluation.validate_checkpoint_score(saved)
+
+
+def test_export_cannot_relabel_fast_score_as_slow_entry(tmp_path):
+    run = _run(tmp_path)
+    for name in ("fast", "slow"):
+        folder = run.impl / name
+        folder.mkdir()
+        for source in ("code.txt", "proof.txt"):
+            shutil.copyfile(run.impl / source, folder / source)
+    (run.evaluator / "score.py").write_text(
+        "import os, json\nfrom pathlib import Path\n"
+        "print(json.dumps({'throughput': 12 if "
+        "Path(os.environ['SKYDISCOVER_IMPL']).name == 'fast' else 3}))\n"
+    )
+    run.bench.mkdir(exist_ok=True)
+    run.leaderboard.write_text(json.dumps([{"impl": "synthesis/impl/fast"}]))
+    _record(run, _evaluate(run))
+    out, saved = checkpoint.snapshot_run(run.path, tmp_path, became_best=True)
+    run.leaderboard.write_text(json.dumps([{"impl": "synthesis/impl/slow"}]))
+    row = _record(run, _evaluate(run))
+    assert row["metrics"] == {"throughput": 3}
+    record = checkpoint.read_record(saved)
+    record["entry"] = "slow"
+    checkpoint._write_json(saved / ".verification/record.json", record)
+    checkpoint.stamp_audit(run.path, [])
+    with pytest.raises(ValueError, match="entry"):
+        spec_run.export_deliverable(run.path, tmp_path)
+    # The measured receipt is never changed to match the forged entry.
+    doc = json.loads((saved / ".verification/evaluation/evaluation.json").read_text())
+    assert doc["impl"] == "synthesis/impl/fast"

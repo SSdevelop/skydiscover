@@ -680,7 +680,11 @@ def _verify_export(best: Path, run: Run, *, production_ready=False) -> None:
     score = artifact_store.read_score(best)
     if not score.get("score"):
         score["score"] = current_score["score"]
-    if not score.get("baselines") and current_score.get("baselines"):
+    if (
+        not run.co_generates_proof()
+        and not score.get("baselines")
+        and current_score.get("baselines")
+    ):
         score["baselines"] = current_score["baselines"]
     artifact_store._write_json(best / "score.json", score)
     # This catches literal dependencies on the old project; relocation is not an OS sandbox. The
@@ -760,15 +764,20 @@ def _verify_export(best: Path, run: Run, *, production_ready=False) -> None:
         )
     inputs = artifact_store.input_digests(run.path)
     measured = artifact_store._measured_row(artifact_store._read_json(run.leaderboard, []), inputs)
+    # A scored proof checkpoint keeps the configuration/direction of its own receipt,
+    # even when identical source was later measured under a different configuration.
+    measurement = record if run.co_generates_proof() else measured
     artifact_store._write_json(
         private / "record.json",
         {
             **record,
             "inputs": inputs,
-            "config": measured.get("config"),
-            "direction": measured.get("direction", "max"),
+            "config": measurement.get("config"),
+            "direction": measurement.get("direction", "max"),
         },
     )
+    if run.co_generates_proof():
+        validate_checkpoint_score(best)
 
 
 def _unverified_history(out: Path, run_dir: Path, verdicts: dict) -> None:

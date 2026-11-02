@@ -317,6 +317,11 @@ def validate_checkpoint_score(saved: Path) -> None:
     output = saved / ".verification/evaluation"
     doc = checkpoint._read_json(output / "evaluation.json", {})
     metrics = _validate_evidence(output, doc, record.get("inputs", {}))
+    # The digest covers the whole implementation tree; choosing another entry within
+    # that unchanged tree must not reuse this receipt's score.
+    measured_entry = (Path("synthesis/impl") / record["entry"]).as_posix()
+    if doc.get("impl") != measured_entry:
+        raise ValueError("Checkpoint entry differs from the measured entry")
     if doc.get("config") != record.get("config"):
         raise ValueError("Checkpoint configuration differs from the measured configuration")
     score = checkpoint.read_score(saved).get("score")
